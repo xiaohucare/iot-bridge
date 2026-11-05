@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.iotbridge</groupId>
+        <artifactId>iotbridge</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>iotbridge-plugin-sos</artifactId>
+    <name>iotbridge-plugin-sos</name>
+    <description>SOS-C02/C03B/W03-A/C03-AO 智能无线终端消防设备通信协议 V3.0 插件（二进制帧 + CRC16-XMODEM）</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-spi</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

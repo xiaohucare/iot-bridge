@@ -1,0 +1,17 @@
+# sos profile：以 SOS-C02 V3.0 二进制协议接入设备
+# 启动：java -jar iotbridge.jar --spring.profiles.active=sos
+iotbridge:
+  protocol:
+    # 默认使用 SOS 协议插件
+    default: sos-c02
+  netty:
+    host: 0.0.0.0
+    port: 9000
+    # 二进制帧按长度字段切分：帧头3+版本1+厂商2+序列2+命令1 = 偏移9，长度2，其后为数据体
+    frame-mode: LENGTH_FIELD
+    length-field-offset: 9
+    length-field-length: 2
+    # 数据体之后还有 CRC(2)+帧尾(3)=5 字节需计入整帧长度
+    length-adjustment: 5
+    initial-bytes-to-strip: 0
+    max-frame-length: 1024

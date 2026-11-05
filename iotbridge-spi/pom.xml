@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.iotbridge</groupId>
+        <artifactId>iotbridge</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>iotbridge-spi</artifactId>
+    <name>iotbridge-spi</name>
+    <description>协议插件 SPI 契约：编解码接口、上/下行消息模型、帧规则与内部解耦回调接口</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-common</artifactId>
+        </dependency>
+    </dependencies>
+</project>

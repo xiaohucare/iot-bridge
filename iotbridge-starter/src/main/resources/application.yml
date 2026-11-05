@@ -1,0 +1,47 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: iotbridge
+  # Kafka：上行数据投递
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
+    producer:
+      acks: 1
+      retries: 3
+  # RabbitMQ：下行指令收发
+  rabbitmq:
+    host: ${RABBIT_HOST:localhost}
+    port: ${RABBIT_PORT:5672}
+    username: ${RABBIT_USER:guest}
+    password: ${RABBIT_PASS:guest}
+    listener:
+      simple:
+        acknowledge-mode: auto
+        concurrency: 2
+        max-concurrency: 8
+
+# 网关自定义配置
+iotbridge:
+  protocol:
+    # 默认协议类型，需与某个 ProtocolCodec 插件一致
+    default: demo-text
+  netty:
+    host: 0.0.0.0
+    port: 9000
+    boss-threads: 1
+    worker-threads: 0
+    max-frame-length: 65536
+    # 帧切分模式：DELIMITER 行分隔(文本协议) / LENGTH_FIELD 长度字段(二进制协议，见 application-sos.yml)
+    frame-mode: DELIMITER
+  mq:
+    uplink-topic: iotbridge.uplink
+    downlink-queue: iotbridge.downlink
+    downlink-exchange: iotbridge.downlink.exchange
+    downlink-routing-key: downlink
+
+logging:
+  level:
+    root: INFO
+    com.iotbridge: DEBUG

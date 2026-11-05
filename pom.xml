@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.iotbridge</groupId>
+    <artifactId>iotbridge</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>iotbridge</name>
+    <description>全双工 IoT 协议转换网关（Netty 接入 + SPI 协议插件 + Kafka 上行 + RabbitMQ 下行）</description>
+
+    <modules>
+        <module>iotbridge-common</module>
+        <module>iotbridge-spi</module>
+        <module>iotbridge-plugin-demo</module>
+        <module>iotbridge-plugin-sos</module>
+        <module>iotbridge-mq</module>
+        <module>iotbridge-access-netty</module>
+        <module>iotbridge-bridge-core</module>
+        <module>iotbridge-admin</module>
+        <module>iotbridge-starter</module>
+    </modules>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <netty.version>4.1.100.Final</netty.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- 统一 Netty 版本，供接入层与示例客户端使用 -->
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-bom</artifactId>
+                <version>${netty.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- 内部模块版本对齐，子模块引用无需写 version -->
+            <dependency>
+                <groupId>com.iotbridge</groupId>
+                <artifactId>iotbridge-common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.iotbridge</groupId>
+                <artifactId>iotbridge-spi</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.iotbridge</groupId>
+                <artifactId>iotbridge-plugin-demo</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.iotbridge</groupId>
+                <artifactId>iotbridge-plugin-sos</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.iotbridge</groupId>
+                <artifactId>iotbridge-mq</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.iotbridge</groupId>
+                <artifactId>iotbridge-access-netty</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.iotbridge</groupId>
+                <artifactId>iotbridge-bridge-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.iotbridge</groupId>
+                <artifactId>iotbridge-admin</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <configuration>
+                        <release>${maven.compiler.release}</release>
+                        <encoding>${project.build.sourceEncoding}</encoding>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

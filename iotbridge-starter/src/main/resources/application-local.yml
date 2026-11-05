@@ -1,0 +1,13 @@
+# local profile：配合 docker/docker-compose.yml 启动的本地 Kafka + RabbitMQ 默认地址
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+
+logging:
+  level:
+    com.iotbridge: DEBUG

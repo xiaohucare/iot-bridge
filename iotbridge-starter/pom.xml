@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.iotbridge</groupId>
+        <artifactId>iotbridge</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>iotbridge-starter</artifactId>
+    <name>iotbridge-starter</name>
+    <description>启动装配模块：聚合各层，提供 Spring Boot 入口与配置</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-bridge-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-admin</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-access-netty</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-mq</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-spi</artifactId>
+        </dependency>
+        <!-- 示例协议插件：运行期放入 classpath 供 ServiceLoader 发现 -->
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-plugin-demo</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- SOS V3.0 消防设备协议插件：compile 便于 DemoDevice 客户端构造示例帧，运行期由 ServiceLoader 发现 -->
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-plugin-sos</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>iotbridge</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>com.iotbridge.IotbridgeApplication</mainClass>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
