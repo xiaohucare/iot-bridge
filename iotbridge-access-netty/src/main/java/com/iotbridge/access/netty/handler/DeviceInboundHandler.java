@@ -26,10 +26,24 @@ public class DeviceInboundHandler extends SimpleChannelInboundHandler<ByteBuf> {
 
     private final ChannelManager channelManager;
     private final UplinkFrameListener uplinkFrameListener;
+    private final String protocolType;
 
     public DeviceInboundHandler(ChannelManager channelManager, UplinkFrameListener uplinkFrameListener) {
+        this(channelManager, uplinkFrameListener, null);
+    }
+
+    /**
+     * 构造入站处理器。
+     *
+     * @param channelManager        会话管理器
+     * @param uplinkFrameListener   上行帧回调
+     * @param protocolType          本处理器所属监听端口绑定的协议类型（为空回退默认协议）
+     */
+    public DeviceInboundHandler(ChannelManager channelManager, UplinkFrameListener uplinkFrameListener,
+                               String protocolType) {
         this.channelManager = channelManager;
         this.uplinkFrameListener = uplinkFrameListener;
+        this.protocolType = protocolType;
     }
 
     @Override
@@ -40,7 +54,7 @@ public class DeviceInboundHandler extends SimpleChannelInboundHandler<ByteBuf> {
         // SimpleChannelInboundHandler 会自动释放 msg，这里复制为独立字节数组供下游异步使用
         byte[] frame = ByteBufUtil.getBytes(msg);
         String remote = String.valueOf(ctx.channel().remoteAddress());
-        UplinkFrameEvent event = new UplinkFrameEvent(ctx.channel(), frame, remote);
+        UplinkFrameEvent event = new UplinkFrameEvent(ctx.channel(), frame, remote, protocolType);
         try {
             uplinkFrameListener.onUplinkFrame(event);
         } catch (RuntimeException e) {

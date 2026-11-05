@@ -28,6 +28,7 @@ iotbridge:
     # 默认协议类型：默认使用 SOS-C02 V3.0 二进制协议（无需再显式激活 sos profile）
     default: sos-c02
   netty:
+    # 全局默认（监听项未显式配置的字段继承自这里；未配置 listeners 时用这些扁平字段合成单一监听）
     host: 0.0.0.0
     port: 9000
     boss-threads: 1
@@ -41,6 +42,19 @@ iotbridge:
     length-field-length: 2
     length-adjustment: 5
     initial-bytes-to-strip: 0
+    # 多协议监听：每个端口绑定一种上行协议及其切帧方式，未填项继承上面的全局默认。
+    # 留空 listeners 则退回上面的单一全局监听（向后兼容）。
+    listeners:
+      # 9000：SOS-C02 二进制协议，继承全局 LENGTH_FIELD(偏移9/长度2/修正5/上限1024)
+      - name: sos
+        port: 9000
+        protocol-type: sos-c02
+      # 9001：demo-text 文本协议，改用行分隔切帧（覆盖 frame-mode 与 max-frame-length）
+      - name: demo-text
+        port: 9001
+        protocol-type: demo-text
+        frame-mode: DELIMITER
+        max-frame-length: 65536
   mq:
     uplink-topic: iotbridge.uplink
     downlink-queue: iotbridge.downlink

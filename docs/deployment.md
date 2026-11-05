@@ -11,7 +11,7 @@
 | Kafka | 3.7（示例用 `apache/kafka:3.7.0`，KRaft 单节点） | 上行消息 |
 | RabbitMQ | 3.12（示例用 `rabbitmq:3.12-management`） | 下行指令 |
 
-默认端口：HTTP `8080`、设备 TCP `9000`、Kafka `9092`、RabbitMQ `5672`（管理台 `15672`）。
+默认端口：HTTP `8080`、设备 TCP `9000`（SOS）/ `9001`（demo-text）、Kafka `9092`、RabbitMQ `5672`（管理台 `15672`）。
 
 ## 2. 构建
 
@@ -36,7 +36,9 @@ docker compose -f docker/docker-compose.yml up -d
 
 ## 4. 运行网关
 
-### 4.1 默认协议（demo-text）
+### 4.1 默认：多协议监听
+
+基线 `application.yml` 已默认启用 `iotbridge.netty.listeners`，直接启动即在同一实例并行监听：`9000` 走 SOS-C02（`LENGTH_FIELD`）、`9001` 走 demo-text（`DELIMITER`）；未绑定协议的端口回退 `iotbridge.protocol.default`（基线为 `sos-c02`）。
 
 ```bash
 mvn -pl iotbridge-starter spring-boot:run
@@ -152,6 +154,6 @@ REST 接口定义：
 
 ## 10. 已知限制（规划增强项）
 
-- 上行解码按实例单一默认协议；多协议混跑建议分端口接入或前置协议识别。
+- 上行支持按端口的多协议监听（`iotbridge.netty.listeners[].protocol-type`）：同一实例可在不同端口并行跑不同切帧方式与解码协议的多种协议；未配置 listeners 则用扁平字段合成单监听（向后兼容）。单端口内的自动协议识别（根据首帧内容嗅探）尚未实现，不同帧长的二进制协议仍需分端口接入。
 - 下行离线暂存重投为可选（`iotbridge.downlink.buffer-enabled`，默认关闭）：开启后按 `deviceId` 在有界队列暂存**原始指令**，设备重新上线（收到上行）时由 `DownlinkReflowService` 按设备串行、**重新编码**后按序补发（规避 `timeCalib` 等时间戳指令失效）；补发中发送失败会把剩余帧按原序退回缓冲等待下次上线，超 TTL 或超容量丢弃；内存受双重上限约束（单设备 `max-pending-per-device` + 设备数 `max-pending-devices`，后者超限时淘汰最陈旧设备队列）；仅当前实例内存，多实例不共享、进程重启即清空。
 - 未内置设备鉴权、指令幂等与应答闭环、设备影子持久化、集群会话共享与指标监控——均预留扩展点。

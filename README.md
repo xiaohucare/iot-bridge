@@ -102,14 +102,14 @@ iotbridge (parent, pom)
    ```bash
    docker compose -f docker/docker-compose.yml up -d
    ```
-2. 编译并以默认（demo-text）配置运行网关：
+2. 编译并运行网关（默认多协议监听）：
    ```bash
    mvn -q -DskipTests clean package
    mvn -pl iotbridge-starter spring-boot:run
    # 或： java -jar iotbridge-starter/target/iotbridge.jar
    ```
-   - HTTP：`8080`，设备 TCP：`9000`
-3. 运行模拟设备：在 IDE 直接运行 `com.iotbridge.demo.DemoDeviceClient.main`（位于 `iotbridge-starter` 测试目录），它会连接 `9000` 并发送上行：
+   - HTTP：`8080`；设备 TCP：SOS-C02 `9000`（LENGTH_FIELD）、demo-text `9001`（DELIMITER）
+3. 运行模拟设备：在 IDE 直接运行 `com.iotbridge.demo.DemoDeviceClient.main`（位于 `iotbridge-starter` 测试目录），它连接 demo-text 端口 `9001` 并发送上行：
    ```
    dev001,temperature=26.5,humidity=60
    ```
@@ -154,7 +154,7 @@ iotbridge (parent, pom)
 
 `DownlinkCommandConsumer` 监听队列并回调 `DownlinkDispatchHandler.handle(command)`。
 
-> 注意：上行解码始终使用 `iotbridge.protocol.default` 指定的默认协议；`protocolType` 仅对**下行**指令生效（用于在同实例内多协议路由）。
+> 注意：**上行**按接入端口绑定的协议解码（见 `iotbridge.netty.listeners`，每端口一个 `protocol-type`；未绑定端口回退 `iotbridge.protocol.default`），因此**同一实例可在不同端口并行运行多种协议**；**下行**按指令的 `protocolType` 精确路由（为空回退默认协议）。
 
 ### 5.3 统一响应与错误码
 
@@ -215,16 +215,44 @@ curl http://localhost:8080/api/v1/devices/869975034441082/online
 
 > 在线状态基于当前网关实例内存会话（`ChannelManager`）；设备需成功处理过至少一帧上行才会登记，多实例部署时不共享。
 
-## 7. 帧切分模式
+## 7. 帧切分模式与多协议监听
 
-`NettyTcpServer` 依据 `iotbridge.netty.frame-mode` 装配流水线首端的帧解码器：
+`NettyTcpServer` 为**每个监听端口**装配其切帧方式：
 
 | 模式 | 解码器 | 适用 |
 | --- | --- | --- |
-| `DELIMITER`（默认） | `DelimiterBasedFrameDecoder(maxFrameLength, \n)` | 行文本协议（demo-text） |
+| `DELIMITER` | `DelimiterBasedFrameDecoder(maxFrameLength, \n)` | 行文本协议（demo-text） |
 | `LENGTH_FIELD` | `LengthFieldBasedFrameDecoder(maxFrameLength, offset, length, adjustment, strip)` | 二进制协议（SOS V3.0） |
 
-两种模式下帧解码器均输出整帧 `ByteBuf`，由 `DeviceInboundHandler` 转为 `byte[]` 封装 `UplinkFrameEvent(channel, frame, remote)` 交给 `UplinkDispatcher`，再由协议插件 `decode`。因此同一套处理逻辑可同时承载文本与二进制协议——只需切换帧模式并指定默认协议。
+两种模式下帧解码器均输出整帧 `ByteBuf`，由 `DeviceInboundHandler` 转为 `byte[]` 封装 `UplinkFrameEvent(channel, frame, remote, protocolType)` 交给 `UplinkDispatcher`，再按端口绑定的 `protocolType` 选择插件 `decode`。
+
+### 7.1 多协议监听（`iotbridge.netty.listeners`）
+
+共享一组 boss/worker 线程，可绑定多个端口，每个端口独立指定协议与切帧参数；未填项继承 `iotbridge.netty` 全局默认。**留空 `listeners` 时，用扁平的全局字段合成单一监听，与旧配置完全兼容。**
+
+```yaml
+iotbridge:
+  netty:
+    host: 0.0.0.0        # 全局默认，监听项未写 host 时继承
+    frame-mode: LENGTH_FIELD
+    max-frame-length: 1024
+    length-field-offset: 9
+    length-field-length: 2
+    length-adjustment: 5
+    initial-bytes-to-strip: 0
+    listeners:
+      - name: sos         # 9000 走 SOS 二进制，继承全局 LENGTH_FIELD
+        port: 9000
+        protocol-type: sos-c02
+      - name: demo-text   # 9001 走文本，覆盖为 DELIMITER
+        port: 9001
+        protocol-type: demo-text
+        frame-mode: DELIMITER
+        max-frame-length: 65536
+```
+
+> 注意：Spring 集合绑定**不跨属性源合并**——若用 `--iotbridge.netty.listeners[0].port=...` 命令行覆盖某一项，会整体替换 yml 中的 `listeners` 列表，导致 `name`/`protocol-type`/`frame-mode` 等未在同源声明的字段丢失。多协议请尽量在同一处（yml 或 profile）完整声明。
+
 
 ## 8. 示例协议 demo-text
 
@@ -344,7 +372,7 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 | 配置 | 说明 | 默认 |
 | --- | --- | --- |
 | `server.port` | HTTP 端口 | 8080 |
-| `iotbridge.protocol.default` | 默认协议类型（上行解码依据；下行可被 `protocolType` 覆盖） | demo-text |
+| `iotbridge.protocol.default` | 默认协议（未绑定端口的上行回退此协议；下行可被 `protocolType` 覆盖） | demo-text |
 | `iotbridge.netty.host` / `port` | 设备 TCP 监听地址/端口 | 0.0.0.0 / 9000 |
 | `iotbridge.netty.boss-threads` / `worker-threads` | boss/worker 线程数（worker=0 依 CPU 核数） | 1 / 0 |
 | `iotbridge.netty.max-frame-length` | 单帧最大长度 | 65536 |
@@ -353,6 +381,7 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 | `iotbridge.netty.length-field-length` | 长度字段字节数（SOS=2） | 2 |
 | `iotbridge.netty.length-adjustment` | 长度修正值（SOS=CRC2+帧尾3=5） | 5 |
 | `iotbridge.netty.initial-bytes-to-strip` | 输出前剥离字节（0=保留整帧） | 0 |
+| `iotbridge.netty.listeners[]` | 多协议监听（每项 `name`/`host`/`port`/`protocol-type`/`frame-mode`/长度字段参，未填继承全局）；为空则合成单监听 | 空（用扁平字段） |
 | `iotbridge.mq.uplink-topic` | 上行 Kafka 主题 | iotbridge.uplink |
 | `iotbridge.mq.downlink-queue` | 下行 RabbitMQ 队列 | iotbridge.downlink |
 | `iotbridge.mq.downlink-exchange` | 下行交换机 | iotbridge.downlink.exchange |
@@ -418,7 +447,7 @@ iot-bridge/
 
 ## 14. 设计说明与限制
 
-- **上行单协议**：上行解码固定使用默认协议；同实例多协议混跑需按协议分端口，或在网关前做协议识别（当前未实现）。
+- **上行多协议**：上行按接入端口绑定的协议（`iotbridge.netty.listeners[].protocol-type`）解码，同一实例可在不同端口并行跑多种协议（如 9000=sos-c02 LENGTH_FIELD、9001=demo-text DELIMITER）；未绑定端口回退默认协议。单端口内的自动协议识别（根据首帧内容嗅探）尚未实现，不同帧长的二进制协议仍需分端口接入。
 - **下行协议路由**：下行按 `DownlinkCommand.protocolType` 经 `resolve()` 选择插件，为空回退默认。
 - **在线判定即写即发（可选缓冲重投）**：设备离线时默认丢弃并告警；开启 `iotbridge.downlink.buffer-enabled` 后按 `deviceId` 暂存**原始下行指令**（有界 + TTL），设备重新上线（收到上行）时由 `DownlinkReflowService` **按设备串行、以当前指令重新编码后**按序补发（规避 `timeCalib` 等含时间戳指令在离线期间失效）；补发中发送失败则中断并把剩余帧按原序退回缓冲，等待下次上线，杜绝静默丢失。缓冲仅存于当前实例内存，进程重启清空、多实例不共享。
 - **未包含**：设备鉴权、指令幂等与应答确认闭环、设备影子持久化、集群化会话共享、指标监控等——接口位已预留，可迭代增强。

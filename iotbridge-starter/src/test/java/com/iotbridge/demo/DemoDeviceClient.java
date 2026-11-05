@@ -18,7 +18,7 @@ import io.netty.util.CharsetUtil;
 /**
  * 模拟设备客户端（可运行示例）。
  *
- * <p>连接网关 TCP 端口后发送一行上行报文，并持续打印网关回写的下行指令，用于端到端联调。
+ * <p>连接网关 demo-text 监听端口（默认 9001，行分隔切帧）后发送一行上行报文，并持续打印网关回写的下行指令，用于端到端联调。
  * 直接以 {@code main} 方法在 IDE 中运行，或：
  * {@code mvn -q -pl iotbridge-starter test-compile exec:java}（需 exec 插件）。</p>
  *
@@ -28,7 +28,8 @@ import io.netty.util.CharsetUtil;
 public final class DemoDeviceClient {
 
     private static final String HOST = "127.0.0.1";
-    private static final int PORT = 9000;
+    // demo-text 文本协议监听端口（多协议默认下 9000 为 SOS，文本设备走 9001）
+    private static final int PORT = 9001;
     private static final String UPLINK_SAMPLE = "dev001,temperature=26.5,humidity=60";
 
     private DemoDeviceClient() {

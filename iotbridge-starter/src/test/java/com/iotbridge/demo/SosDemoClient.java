@@ -21,7 +21,8 @@ import java.nio.charset.StandardCharsets;
 /**
  * SOS-C02 V3.0 协议 TCP 演示客户端（可运行示例）。
  *
- * <p>需先以 sos profile 启动网关：{@code --spring.profiles.active=sos}（TCP 端口 9000，长度字段切帧）。</p>
+ * <p>基线配置已将 9000 绑定为 SOS-C02（LENGTH_FIELD 切帧），直接启动网关即可（无需额外 profile；
+ * 保留的 {@code --spring.profiles.active=sos} 等效）。</p>
  *
  * <p>流程：连接网关 -> 发送注册包(0x01) -> 发送事件上报包(0x02, 报警) -> 保持连接并打印网关回写的下行帧。
  * 随后可通过 admin REST 对设备 IMEI 下发指令（如时间校准），在本客户端观察下行帧。</p>

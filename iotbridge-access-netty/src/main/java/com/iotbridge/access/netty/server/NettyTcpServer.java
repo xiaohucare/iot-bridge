@@ -2,9 +2,10 @@ package com.iotbridge.access.netty.server;
 
 import com.iotbridge.access.netty.api.UplinkFrameListener;
 import com.iotbridge.access.netty.config.NettyProperties;
+import com.iotbridge.access.netty.config.NettyProperties.FrameMode;
+import com.iotbridge.access.netty.config.NettyProperties.Listener;
 import com.iotbridge.access.netty.handler.DeviceInboundHandler;
 import com.iotbridge.access.netty.session.ChannelManager;
-import com.iotbridge.access.netty.config.NettyProperties.FrameMode;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
@@ -21,11 +22,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * Netty TCP 长连接服务端。
  *
- * <p>负责引导 boss/worker 线程组与通道流水线：按行分隔聚合帧，UTF-8 编解码后交由
- * {@link DeviceInboundHandler} 处理。启停由 bridge-core 的生命周期组件驱动。</p>
+ * <p>共享一组 boss/worker 线程组，按 {@code iotbridge.netty.listeners} 配置绑定多个监听端口，
+ * 每个端口绑定一种上行协议及其切帧方式（DELIMITER 文本 / LENGTH_FIELD 二进制），从而实现
+ * 多协议同进程并行接入。未配置 listeners 时，用扁平的全局字段合成单一监听以保持向后兼容。</p>
+ *
+ * <p>启停由 bridge-core 的生命周期组件驱动。</p>
  *
  * @author iotbridge
  * @date 2026-11-05
@@ -41,7 +49,7 @@ public class NettyTcpServer {
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
-    private Channel serverChannel;
+    private final List<Channel> serverChannels = new ArrayList<>();
 
     public NettyTcpServer(ChannelManager channelManager, UplinkFrameListener uplinkFrameListener,
                           NettyProperties nettyProperties) {
@@ -51,66 +59,191 @@ public class NettyTcpServer {
     }
 
     /**
-     * 启动 TCP 服务端并绑定监听端口。
+     * 启动全部监听端口并绑定线程组。任一端口绑定失败即整体回退，避免半启动状态。
      *
      * @throws InterruptedException 绑定过程被中断
      */
     public void start() throws InterruptedException {
+        List<Endpoint> endpoints = resolveEndpoints(nettyProperties);
         int bossThreads = nettyProperties.getBossThreads();
         int workerThreads = nettyProperties.getWorkerThreads();
         this.bossGroup = new NioEventLoopGroup(bossThreads);
         this.workerGroup = workerThreads > 0 ? new NioEventLoopGroup(workerThreads) : new NioEventLoopGroup();
 
-        ServerBootstrap bootstrap = new ServerBootstrap();
-        bootstrap.group(bossGroup, workerGroup)
-                .channel(NioServerSocketChannel.class)
-                .option(ChannelOption.SO_BACKLOG, 1024)
-                .childOption(ChannelOption.SO_KEEPALIVE, Boolean.TRUE)
-                .childHandler(new ChannelInitializer<SocketChannel>() {
-                    @Override
-                    protected void initChannel(SocketChannel ch) {
-                        ch.pipeline()
-                                .addLast(buildFrameDecoder())
-                                .addLast(new DeviceInboundHandler(channelManager, uplinkFrameListener));
-                    }
-                });
-
-        this.serverChannel = bootstrap.bind(nettyProperties.getHost(), nettyProperties.getPort()).sync()
-                .channel();
-        log.info("Netty TCP 服务端已启动，监听 {}:{}", nettyProperties.getHost(), nettyProperties.getPort());
+        try {
+            for (Endpoint endpoint : endpoints) {
+                Channel serverChannel = new ServerBootstrap()
+                        .group(bossGroup, workerGroup)
+                        .channel(NioServerSocketChannel.class)
+                        .option(ChannelOption.SO_BACKLOG, 1024)
+                        .childOption(ChannelOption.SO_KEEPALIVE, Boolean.TRUE)
+                        .childHandler(newInitializer(endpoint))
+                        .bind(endpoint.host, endpoint.port).sync().channel();
+                serverChannels.add(serverChannel);
+                log.info("Netty 监听已启动 name={} 监听 {}:{} 协议={} 切帧={}", endpoint.name, endpoint.host,
+                        endpoint.port, endpoint.protocolType == null ? "<默认>" : endpoint.protocolType,
+                        endpoint.frameMode);
+            }
+        } catch (InterruptedException e) {
+            stop();
+            throw e;
+        }
     }
 
     /**
-     * 依据配置的帧模式构建帧解码器。
+     * 为单个监听构建通道初始化器：按端口的切帧方式装配帧解码器，并让入站处理器携带该端口协议类型。
      *
+     * @param endpoint 已解析的监听端点
+     * @return 通道初始化器
+     */
+    private ChannelInitializer<SocketChannel> newInitializer(Endpoint endpoint) {
+        return new ChannelInitializer<SocketChannel>() {
+            @Override
+            protected void initChannel(SocketChannel ch) {
+                ch.pipeline()
+                        .addLast(buildFrameDecoder(endpoint))
+                        .addLast(new DeviceInboundHandler(channelManager, uplinkFrameListener,
+                                endpoint.protocolType));
+            }
+        };
+    }
+
+    /**
+     * 依据端点配置的帧模式构建帧解码器。
+     *
+     * @param endpoint 已解析的监听端点
      * @return 帧解码器 Handler
      */
-    private ChannelHandler buildFrameDecoder() {
-        if (nettyProperties.getFrameMode() == FrameMode.LENGTH_FIELD) {
-            return new LengthFieldBasedFrameDecoder(
-                    nettyProperties.getMaxFrameLength(),
-                    nettyProperties.getLengthFieldOffset(),
-                    nettyProperties.getLengthFieldLength(),
-                    nettyProperties.getLengthAdjustment(),
-                    nettyProperties.getInitialBytesToStrip());
+    private ChannelHandler buildFrameDecoder(Endpoint endpoint) {
+        if (endpoint.frameMode == FrameMode.LENGTH_FIELD) {
+            return new LengthFieldBasedFrameDecoder(endpoint.maxFrameLength, endpoint.lengthFieldOffset,
+                    endpoint.lengthFieldLength, endpoint.lengthAdjustment, endpoint.initialBytesToStrip);
         }
-        return new DelimiterBasedFrameDecoder(
-                nettyProperties.getMaxFrameLength(), Delimiters.lineDelimiter());
+        return new DelimiterBasedFrameDecoder(endpoint.maxFrameLength, Delimiters.lineDelimiter());
     }
 
     /**
-     * 关闭服务端，释放线程组资源。
+     * 解析生效的监听端点列表：listeners 为空时用全局扁平字段合成单一监听；
+     * 每个监听未填项继承全局默认。
+     *
+     * @param props Netty 配置
+     * @return 已合并默认值的端点列表
+     */
+    static List<Endpoint> resolveEndpoints(NettyProperties props) {
+        List<Listener> listeners = props.getListeners();
+        List<Endpoint> endpoints = new ArrayList<>();
+        if (listeners == null || listeners.isEmpty()) {
+            endpoints.add(merge("default", props.getHost(), props.getPort(), null, props.getFrameMode(),
+                    props.getMaxFrameLength(), props.getLengthFieldOffset(), props.getLengthFieldLength(),
+                    props.getLengthAdjustment(), props.getInitialBytesToStrip(), props));
+            return endpoints;
+        }
+        for (Listener listener : listeners) {
+            if (listener.getPort() == null) {
+                throw new IllegalStateException("监听未配置端口 name=" + listener.getName());
+            }
+            endpoints.add(merge(listener.getName(), listener.getHost(), listener.getPort(),
+                    listener.getProtocolType(), listener.getFrameMode(), listener.getMaxFrameLength(),
+                    listener.getLengthFieldOffset(), listener.getLengthFieldLength(), listener.getLengthAdjustment(),
+                    listener.getInitialBytesToStrip(), props));
+        }
+        return Collections.unmodifiableList(endpoints);
+    }
+
+    /**
+     * 将监听配置与全局默认合并，监听项为空时回退全局值。
+     */
+    private static Endpoint merge(String name, String host, Integer port, String protocolType, FrameMode frameMode,
+                                  Integer maxFrameLength, Integer lengthFieldOffset, Integer lengthFieldLength,
+                                  Integer lengthAdjustment, Integer initialBytesToStrip, NettyProperties props) {
+        Endpoint endpoint = new Endpoint();
+        endpoint.name = (name == null || name.isEmpty()) ? "port-" + port : name;
+        endpoint.host = host != null ? host : props.getHost();
+        endpoint.port = port;
+        endpoint.protocolType = (protocolType == null || protocolType.isEmpty()) ? null : protocolType;
+        endpoint.frameMode = frameMode != null ? frameMode : props.getFrameMode();
+        endpoint.maxFrameLength = maxFrameLength != null ? maxFrameLength : props.getMaxFrameLength();
+        endpoint.lengthFieldOffset = lengthFieldOffset != null ? lengthFieldOffset : props.getLengthFieldOffset();
+        endpoint.lengthFieldLength = lengthFieldLength != null ? lengthFieldLength : props.getLengthFieldLength();
+        endpoint.lengthAdjustment = lengthAdjustment != null ? lengthAdjustment : props.getLengthAdjustment();
+        endpoint.initialBytesToStrip = initialBytesToStrip != null ? initialBytesToStrip
+                : props.getInitialBytesToStrip();
+        return endpoint;
+    }
+
+    /**
+     * 关闭全部监听与线程组，释放资源。
      */
     public void stop() {
-        if (serverChannel != null) {
+        for (Channel serverChannel : serverChannels) {
             serverChannel.close().syncUninterruptibly();
         }
+        serverChannels.clear();
         if (bossGroup != null) {
             bossGroup.shutdownGracefully();
+            bossGroup = null;
         }
         if (workerGroup != null) {
             workerGroup.shutdownGracefully();
+            workerGroup = null;
         }
         log.info("Netty TCP 服务端已关闭");
+    }
+
+    /**
+     * 已解析、合并全局默认后的监听端点（内部值对象）。
+     */
+    static final class Endpoint {
+
+        private String name;
+        private String host;
+        private int port;
+        private String protocolType;
+        private FrameMode frameMode;
+        private int maxFrameLength;
+        private int lengthFieldOffset;
+        private int lengthFieldLength;
+        private int lengthAdjustment;
+        private int initialBytesToStrip;
+
+        String getName() {
+            return name;
+        }
+
+        int getPort() {
+            return port;
+        }
+
+        FrameMode getFrameMode() {
+            return frameMode;
+        }
+
+        String getHost() {
+            return host;
+        }
+
+        String getProtocolType() {
+            return protocolType;
+        }
+
+        int getMaxFrameLength() {
+            return maxFrameLength;
+        }
+
+        int getLengthFieldOffset() {
+            return lengthFieldOffset;
+        }
+
+        int getLengthFieldLength() {
+            return lengthFieldLength;
+        }
+
+        int getLengthAdjustment() {
+            return lengthAdjustment;
+        }
+
+        int getInitialBytesToStrip() {
+            return initialBytesToStrip;
+        }
     }
 }

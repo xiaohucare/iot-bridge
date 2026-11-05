@@ -15,7 +15,8 @@ import org.springframework.stereotype.Component;
 /**
  * 上行分发器：设备帧 -> 协议解码 -> 会话绑定 -> Kafka 投递。
  *
- * <p>实现接入层 {@link UplinkFrameListener}，由 Netty 入站处理器回调。使用默认协议解码，
+ * <p>实现接入层 {@link UplinkFrameListener}，由 Netty 入站处理器回调。按接入端口绑定的
+ * 协议类型（{@link UplinkFrameEvent#getProtocolType()}，为空则回退注册表默认协议）解码，
  * 解码得到 deviceId 后登记 {@code deviceId<->Channel}，随后投递上行消息。</p>
  *
  * @author iotbridge
@@ -41,7 +42,7 @@ public class UplinkDispatcher implements UplinkFrameListener {
 
     @Override
     public void onUplinkFrame(UplinkFrameEvent event) {
-        ProtocolCodec codec = codecRegistry.getDefault();
+        ProtocolCodec codec = codecRegistry.resolve(event.getProtocolType());
         UplinkMessage message = codec.decode(event.getFrame());
         // 绑定设备与通道，供下行按 deviceId 寻址
         channelManager.register(message.getDeviceId(), event.getChannel());

@@ -16,6 +16,18 @@ public class UplinkFrameEvent {
     private final Channel channel;
     private final byte[] frame;
     private final String remoteAddress;
+    private final String protocolType;
+
+    /**
+     * 构造上行帧事件（不指定协议，回退注册表默认协议）。
+     *
+     * @param channel       来源设备通道
+     * @param frame         原始帧字节（不含分隔符）
+     * @param remoteAddress 远端地址描述
+     */
+    public UplinkFrameEvent(Channel channel, byte[] frame, String remoteAddress) {
+        this(channel, frame, remoteAddress, null);
+    }
 
     /**
      * 构造上行帧事件。
@@ -23,11 +35,13 @@ public class UplinkFrameEvent {
      * @param channel       来源设备通道
      * @param frame         原始帧字节（不含分隔符）
      * @param remoteAddress 远端地址描述
+     * @param protocolType  该接入端口绑定的协议类型；为空时下游回退默认协议
      */
-    public UplinkFrameEvent(Channel channel, byte[] frame, String remoteAddress) {
+    public UplinkFrameEvent(Channel channel, byte[] frame, String remoteAddress, String protocolType) {
         this.channel = channel;
         this.frame = frame;
         this.remoteAddress = remoteAddress;
+        this.protocolType = protocolType;
     }
 
     public Channel getChannel() {
@@ -40,5 +54,14 @@ public class UplinkFrameEvent {
 
     public String getRemoteAddress() {
         return remoteAddress;
+    }
+
+    /**
+     * 接入端口绑定的协议类型（可能为空）。
+     *
+     * @return 协议类型，空表示未绑定（由下游回退默认协议）
+     */
+    public String getProtocolType() {
+        return protocolType;
     }
 }

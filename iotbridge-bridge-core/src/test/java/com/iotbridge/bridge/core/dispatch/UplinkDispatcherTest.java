@@ -45,6 +45,27 @@ class UplinkDispatcherTest {
     }
 
     @Test
+    void decodesWithPortBoundProtocolType() {
+        // 接入端口绑定协议时，应按该协议类型而非默认协议解码
+        ProtocolCodec codec = mock(ProtocolCodec.class);
+        when(codec.decode(any())).thenReturn(new UplinkMessage("dev1", "demo-text", new HashMap<>(), 1L));
+        ProtocolCodecRegistry registry = mock(ProtocolCodecRegistry.class);
+        when(registry.resolve(any())).thenReturn(codec);
+        ChannelManager channelManager = mock(ChannelManager.class);
+        UplinkProducer producer = mock(UplinkProducer.class);
+        Channel channel = mock(Channel.class);
+        DownlinkReflowService reflowService = new DownlinkReflowService(buffer(false), channelManager, registry);
+        UplinkDispatcher dispatcher = new UplinkDispatcher(registry, channelManager, producer, reflowService);
+
+        UplinkFrameEvent event = new UplinkFrameEvent(channel, new byte[]{1}, "127.0.0.1:1", "demo-text");
+        dispatcher.onUplinkFrame(event);
+
+        verify(registry).resolve(eq("demo-text"));
+        verify(channelManager).register(eq("dev1"), eq(channel));
+        verify(producer).send(any());
+    }
+
+    @Test
     void pendingDownlinkReflowedWhenDeviceComesOnline() {
         DownlinkBuffer buffer = buffer(true);
         DownlinkCommand pendingCommand = new DownlinkCommand("dev1", "sos-c02", "timeCalib", null, "req1");
@@ -83,6 +104,7 @@ class UplinkDispatcherTest {
         when(codec.decode(any())).thenReturn(new UplinkMessage("dev1", "sos-c02", new HashMap<>(), 1L));
         ProtocolCodecRegistry registry = mock(ProtocolCodecRegistry.class);
         when(registry.getDefault()).thenReturn(codec);
+        when(registry.resolve(any())).thenReturn(codec);
         ChannelManager channelManager = mock(ChannelManager.class);
         UplinkProducer producer = mock(UplinkProducer.class);
         Channel channel = mock(Channel.class);
