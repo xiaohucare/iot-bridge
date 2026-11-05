@@ -152,6 +152,9 @@ public class NettyTcpServer {
 
     /**
      * 将监听配置与全局默认合并，监听项为空时回退全局值。
+     *
+     * <p>{@link FrameMode#LENGTH_FIELD} 模式下，长度字段三参数（offset/length/adjustment）为协议专属值、
+     * 不设通用默认：配置缺失即启动失败（fail-fast），避免用错误参数静默切错帧。</p>
      */
     private static Endpoint merge(String name, String host, Integer port, String protocolType, FrameMode frameMode,
                                   Integer maxFrameLength, Integer lengthFieldOffset, Integer lengthFieldLength,
@@ -168,6 +171,13 @@ public class NettyTcpServer {
         endpoint.lengthAdjustment = lengthAdjustment != null ? lengthAdjustment : props.getLengthAdjustment();
         endpoint.initialBytesToStrip = initialBytesToStrip != null ? initialBytesToStrip
                 : props.getInitialBytesToStrip();
+        if (endpoint.frameMode == FrameMode.LENGTH_FIELD
+                && (endpoint.lengthFieldOffset == null || endpoint.lengthFieldLength == null
+                || endpoint.lengthAdjustment == null)) {
+            throw new IllegalStateException(
+                    "LENGTH_FIELD 切帧必须完整配置 length-field-offset/length-field-length/length-adjustment"
+                            + "（监听项或全局 iotbridge.netty），监听 name=" + endpoint.name);
+        }
         return endpoint;
     }
 
@@ -201,10 +211,10 @@ public class NettyTcpServer {
         private String protocolType;
         private FrameMode frameMode;
         private int maxFrameLength;
-        private int lengthFieldOffset;
-        private int lengthFieldLength;
-        private int lengthAdjustment;
-        private int initialBytesToStrip;
+        private Integer lengthFieldOffset;
+        private Integer lengthFieldLength;
+        private Integer lengthAdjustment;
+        private Integer initialBytesToStrip;
 
         String getName() {
             return name;
@@ -230,19 +240,19 @@ public class NettyTcpServer {
             return maxFrameLength;
         }
 
-        int getLengthFieldOffset() {
+        Integer getLengthFieldOffset() {
             return lengthFieldOffset;
         }
 
-        int getLengthFieldLength() {
+        Integer getLengthFieldLength() {
             return lengthFieldLength;
         }
 
-        int getLengthAdjustment() {
+        Integer getLengthAdjustment() {
             return lengthAdjustment;
         }
 
-        int getInitialBytesToStrip() {
+        Integer getInitialBytesToStrip() {
             return initialBytesToStrip;
         }
     }

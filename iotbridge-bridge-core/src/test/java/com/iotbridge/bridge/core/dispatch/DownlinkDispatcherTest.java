@@ -38,7 +38,7 @@ class DownlinkDispatcherTest {
 
     private DownlinkDispatcher dispatcher(ProtocolCodecRegistry registry, ChannelManager channelManager,
                                           DownlinkBuffer buffer) {
-        DownlinkReflowService reflowService = new DownlinkReflowService(buffer, channelManager, registry);
+        DownlinkReflowService reflowService = new DownlinkReflowService(buffer, channelManager, registry, Runnable::run);
         return new DownlinkDispatcher(registry, channelManager, buffer, reflowService);
     }
 

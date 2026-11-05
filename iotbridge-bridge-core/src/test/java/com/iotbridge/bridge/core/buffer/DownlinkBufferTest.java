@@ -96,6 +96,30 @@ class DownlinkBufferTest {
     }
 
     @Test
+    void purgeExpiredRemovesStaleFramesAndEmptyQueues() {
+        long now = System.currentTimeMillis();
+        DownlinkBuffer buffer = buffer(true, 10, 1000);
+        buffer.offer(PT, "d1", frame("old", now - 5000));
+        buffer.offer(PT, "d2", frame("fresh", now));
+
+        assertEquals(1, buffer.purgeExpired());
+
+        // 超期帧被清理且空队列同步移除；未超期设备不受影响
+        assertEquals(0, buffer.pendingSize(PT, "d1"));
+        assertEquals(1, buffer.pendingSize(PT, "d2"));
+        assertEquals(1, buffer.pendingDeviceCount());
+    }
+
+    @Test
+    void purgeExpiredDoesNothingWhenTtlDisabled() {
+        DownlinkBuffer buffer = buffer(true, 10, 0);
+        buffer.offer(PT, "d", frame("x", 1));
+
+        assertEquals(0, buffer.purgeExpired());
+        assertEquals(1, buffer.pendingSize(PT, "d"));
+    }
+
+    @Test
     void totalPendingAndClear() {
         DownlinkBuffer buffer = buffer(true, 10, 0);
         buffer.offer(PT, "d1", frame("a", 1));

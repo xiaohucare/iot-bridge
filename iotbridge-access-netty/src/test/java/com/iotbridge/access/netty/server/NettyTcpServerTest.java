@@ -99,4 +99,30 @@ class NettyTcpServerTest {
 
         assertThrows(IllegalStateException.class, () -> NettyTcpServer.resolveEndpoints(props));
     }
+
+    @Test
+    void lengthFieldWithoutRequiredParamsFailsFast() {
+        // LENGTH_FIELD 模式下长度字段三参数为协议专属必填项，缺失即启动失败
+        NettyProperties props = globals();
+        props.setLengthFieldOffset(null);
+        props.setLengthFieldLength(null);
+        props.setLengthAdjustment(null);
+
+        assertThrows(IllegalStateException.class, () -> NettyTcpServer.resolveEndpoints(props));
+    }
+
+    @Test
+    void delimiterModeDoesNotRequireLengthFieldParams() {
+        // 行分隔模式不依赖长度字段参数，缺省（null）应可正常解析
+        NettyProperties props = globals();
+        props.setFrameMode(FrameMode.DELIMITER);
+        props.setLengthFieldOffset(null);
+        props.setLengthFieldLength(null);
+        props.setLengthAdjustment(null);
+        props.setListeners(Collections.emptyList());
+
+        List<Endpoint> endpoints = NettyTcpServer.resolveEndpoints(props);
+        assertEquals(1, endpoints.size());
+        assertEquals(FrameMode.DELIMITER, endpoints.get(0).getFrameMode());
+    }
 }

@@ -83,7 +83,7 @@ class UplinkDispatcherTest {
         UplinkProducer producer = mock(UplinkProducer.class);
         Channel channel = mock(Channel.class);
 
-        DownlinkReflowService reflowService = new DownlinkReflowService(buffer, channelManager, registry);
+        DownlinkReflowService reflowService = new DownlinkReflowService(buffer, channelManager, registry, Runnable::run);
         UplinkDispatcher dispatcher = new UplinkDispatcher(registry, channelManager, producer, reflowService);
         dispatcher.onUplinkFrame(eventOf(channel));
 
@@ -109,7 +109,7 @@ class UplinkDispatcherTest {
         UplinkProducer producer = mock(UplinkProducer.class);
         Channel channel = mock(Channel.class);
 
-        DownlinkReflowService reflowService = new DownlinkReflowService(buffer, channelManager, registry);
+        DownlinkReflowService reflowService = new DownlinkReflowService(buffer, channelManager, registry, Runnable::run);
         UplinkDispatcher dispatcher = new UplinkDispatcher(registry, channelManager, producer, reflowService);
         dispatcher.onUplinkFrame(eventOf(channel));
 

@@ -4,6 +4,9 @@ import com.iotbridge.access.netty.session.ChannelManager;
 import com.iotbridge.spi.session.SessionKey;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelId;
+import io.netty.channel.DefaultChannelPromise;
+import io.netty.channel.EventLoop;
+import io.netty.util.concurrent.ImmediateEventExecutor;
 import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
@@ -33,6 +36,12 @@ class ChannelManagerTest {
         when(id.asLongText()).thenReturn(channelId);
         when(channel.remoteAddress()).thenReturn(new InetSocketAddress("127.0.0.1", 0));
         when(channel.isActive()).thenReturn(Boolean.TRUE);
+        // sendToDevice 会在非 EventLoop 线程等待写完成：桩定 EventLoop 与立即成功的写 future
+        EventLoop eventLoop = mock(EventLoop.class);
+        when(eventLoop.inEventLoop()).thenReturn(Boolean.FALSE);
+        when(channel.eventLoop()).thenReturn(eventLoop);
+        when(channel.writeAndFlush(any())).thenAnswer(invocation ->
+                new DefaultChannelPromise(channel, ImmediateEventExecutor.INSTANCE).setSuccess());
         return channel;
     }
 
@@ -67,6 +76,40 @@ class ChannelManagerTest {
         ChannelManager manager = new ChannelManager();
 
         assertFalse(manager.sendToDevice("sos-c02", "ghost", "x".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void reRegisterSameDeviceClosesOldChannelAndKeepsNewSession() {
+        ChannelManager manager = new ChannelManager();
+        Channel old = newChannel("chan-old");
+        Channel current = newChannel("chan-new");
+
+        manager.register("sos-c02", "devR", old);
+        manager.register("sos-c02", "devR", current);
+
+        // 重复上线：新会话生效，旧连接被主动关闭（防僵尸连接）
+        assertTrue(manager.isOnline("sos-c02", "devR"));
+        assertEquals(1, manager.onlineCount());
+        verify(old).close();
+        // 旧连接随后的断开事件不得误清新会话
+        manager.unbindByChannel(old);
+        assertTrue(manager.isOnline("sos-c02", "devR"));
+    }
+
+    @Test
+    void isDeviceOnlineUsesIndexAcrossProtocolsAndCleansUpOnUnbind() {
+        ChannelManager manager = new ChannelManager();
+        Channel sos = newChannel("chan-i1");
+        Channel demo = newChannel("chan-i2");
+
+        manager.register("sos-c02", "devI", sos);
+        manager.register("demo-text", "devI", demo);
+        assertTrue(manager.isDeviceOnline("devI"));
+        assertFalse(manager.isDeviceOnline("ghost"));
+
+        manager.unbindByChannel(sos);
+        manager.unbindByChannel(demo);
+        assertFalse(manager.isDeviceOnline("devI"));
     }
 
     @Test

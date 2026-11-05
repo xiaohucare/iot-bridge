@@ -38,7 +38,7 @@ docker compose -f docker/docker-compose.yml up -d
 
 ### 4.1 默认：多协议监听
 
-基线 `application.yml` 已默认启用 `iotbridge.netty.listeners`，直接启动即在同一实例并行监听：`9000` 走 SOS-C02（`LENGTH_FIELD`）、`9001` 走 demo-text（`DELIMITER`）；未绑定协议的端口回退 `iotbridge.protocol.default`（基线为 `sos-c02`）。
+基线 `application.yml` 已默认启用 `iotbridge.netty.listeners`，直接启动即在同一实例并行监听：`9000` 走 SOS-C02（`LENGTH_FIELD`）、`9001` 走 demo-text（`DELIMITER`）；未绑定协议的端口回退 `iotbridge.protocol.default`（基线为中性示例协议 `demo-text`，多协议部署请在 listeners 中显式绑定、下行指令显式携带 `protocolType`）。
 
 ```bash
 mvn -pl iotbridge-starter spring-boot:run
@@ -150,6 +150,7 @@ REST 接口定义：
 | `未找到协议插件` | `protocolType` 拼写错误 / 插件 jar 未在 classpath | 确认 `META-INF/services` 注册与依赖打包 |
 | 下行无反应且日志 `设备离线` | 设备未在线或 `deviceId` 不一致 | 先 `GET /api/v1/devices/online` 确认在线及 deviceId；用上行返回的 IMEI 下发；确认已建立 TCP 会话并发过上行；如开启 `iotbridge.downlink.buffer-enabled`，离线指令会暂存并在设备上线后自动补发 |
 | Kafka/Rabbit 连接失败 | 地址/凭据错误或中间件未就绪 | 用环境变量覆盖 `KAFKA_SERVERS`、`RABBIT_*`；先起中间件再起网关 |
+| RabbitMQ 反复报 `channel error ... 406 PRECONDITION_FAILED - inequivalent arg 'x-dead-letter-exchange' for queue 'iotbridge.downlink'` | RabbitMQ 中已存在旧版本网关声明的同名队列（无死信参数）；RabbitMQ 不允许对已存在队列变更参数，新声明被拒绝 | 删除旧队列后重启网关，应用会按新声明（含死信参数）自动重建：管理台 http://localhost:15672 → Queues → Delete，或 `curl -u guest:guest -X DELETE http://localhost:15672/api/queues/%2F/iotbridge.downlink`。注意：删除会清空该队列未消费的下行指令 |
 
 ## 9. 扩展协议插件的部署
 

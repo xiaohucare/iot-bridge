@@ -34,6 +34,12 @@ public class MqProperties {
      */
     private String downlinkRoutingKey = IotbridgeConstants.ROUTING_KEY_DOWNLINK;
 
+    /**
+     * 下行发布等待 broker confirm 的超时时间（毫秒）。超时或 nack 时发布端抛出业务异常，
+     * 使 REST 调用方得到失败响应而非假成功。
+     */
+    private long downlinkConfirmTimeoutMs = 5000L;
+
     public String getUplinkTopic() {
         return uplinkTopic;
     }
@@ -64,5 +70,13 @@ public class MqProperties {
 
     public void setDownlinkRoutingKey(String downlinkRoutingKey) {
         this.downlinkRoutingKey = downlinkRoutingKey;
+    }
+
+    public long getDownlinkConfirmTimeoutMs() {
+        return downlinkConfirmTimeoutMs;
+    }
+
+    public void setDownlinkConfirmTimeoutMs(long downlinkConfirmTimeoutMs) {
+        this.downlinkConfirmTimeoutMs = downlinkConfirmTimeoutMs;
     }
 }

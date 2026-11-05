@@ -4,29 +4,42 @@ server:
 spring:
   application:
     name: iotbridge
-  # Kafka：上行数据投递
+  # Kafka：上行数据投递（本项为 Kafka 生产者唯一配置来源，代码不再硬编码）
   kafka:
     bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
     producer:
-      acks: 1
-      retries: 3
+      # 可靠性：全部 ISR 副本确认 + 幂等生产者（重试不产生重复），防 broker 端抖动丢消息
+      acks: all
+      retries: 10
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 120000
   # RabbitMQ：下行指令收发
   rabbitmq:
     host: ${RABBIT_HOST:localhost}
     port: ${RABBIT_PORT:5672}
     username: ${RABBIT_USER:guest}
     password: ${RABBIT_PASS:guest}
+    # 发布确认：correlated 模式支持按条同步等待 broker confirm
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
     listener:
       simple:
-        acknowledge-mode: auto
+        # 手动确认：处理成功 ack，毒消息 nack 不重回队列、经死信参数转入 <下行队列>.dlq
+        acknowledge-mode: manual
+        default-requeue-rejected: false
         concurrency: 2
         max-concurrency: 8
 
 # 网关自定义配置
 iotbridge:
   protocol:
-    # 默认协议类型：默认使用 SOS-C02 V3.0 二进制协议（无需再显式激活 sos profile）
-    default: sos-c02
+    # 默认协议类型：仅作为「未绑定端口的上行/未指定 protocolType 的下行」的中性兜底（示例协议 demo-text）。
+    # 多协议部署请显式配置 listeners[].protocol-type，下行指令显式携带 protocolType，勿依赖默认兜底。
+    default: demo-text
   netty:
     # 全局默认（监听项未显式配置的字段继承自这里；未配置 listeners 时用这些扁平字段合成单一监听）
     host: 0.0.0.0
@@ -60,6 +73,8 @@ iotbridge:
     downlink-queue: iotbridge.downlink
     downlink-exchange: iotbridge.downlink.exchange
     downlink-routing-key: downlink
+    # 下行发布同步等待 broker confirm 的超时（毫秒）；nack/超时即向 REST 返回失败，避免假成功
+    downlink-confirm-timeout-ms: 5000
   # 下行离线暂存重投：默认关闭；开启后设备离线时按 deviceId 暂存原始指令，设备重新上线（收到上行）时重新编码并按序补发
   downlink:
     buffer-enabled: false

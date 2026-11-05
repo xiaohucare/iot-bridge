@@ -3,6 +3,7 @@ package com.iotbridge.bridge.core.buffer;
 import com.iotbridge.bridge.core.config.DownlinkBufferProperties;
 import com.iotbridge.spi.session.SessionKey;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -14,6 +15,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 按设备的下行待发缓冲区。
@@ -46,15 +50,38 @@ public class DownlinkBuffer {
 
     private final DownlinkBufferProperties properties;
 
+    /**
+     * 超期指令定时清理线程（仅 TTL>0 且缓冲开启时启动），防止设备长期不上线时过期帧滞留内存。
+     */
+    private volatile ScheduledExecutorService purgeScheduler;
+
     public DownlinkBuffer(DownlinkBufferProperties properties) {
         this.properties = properties;
     }
 
     /**
-     * 启动时打印生效配置并对非法边界告警，避免运行期静默兜底造成误解。
+     * 启动时打印生效配置并对非法边界告警，避免运行期静默兜底造成误解；
+     * TTL>0 且缓冲开启时启动超期指令定时清理。
      */
     @PostConstruct
-    public void logEffectiveConfig() {
+    public void start() {
+        logEffectiveConfig();
+        if (properties.isBufferEnabled() && properties.getPendingTtlMs() > 0) {
+            long interval = purgeIntervalMs();
+            purgeScheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "downlink-buffer-purge");
+                thread.setDaemon(true);
+                return thread;
+            });
+            purgeScheduler.scheduleWithFixedDelay(this::purgeExpiredQuietly, interval, interval, TimeUnit.MILLISECONDS);
+            log.info("下行缓冲超期清理已启动 间隔={}ms", interval);
+        }
+    }
+
+    /**
+     * 打印生效配置并对非法边界告警。
+     */
+    private void logEffectiveConfig() {
         if (properties.getMaxPendingPerDevice() < MIN_LIMIT) {
             log.warn("iotbridge.downlink.max-pending-per-device={} 非法，已按最小值 {} 兜底",
                     properties.getMaxPendingPerDevice(), MIN_LIMIT);
@@ -66,6 +93,66 @@ public class DownlinkBuffer {
         log.info("下行待发缓冲配置：enabled={}, maxPendingPerDevice={}, maxPendingDevices={}, pendingTtlMs={}",
                 properties.isBufferEnabled(), properties.getMaxPendingPerDevice(),
                 properties.getMaxPendingDevices(), properties.getPendingTtlMs());
+    }
+
+    /**
+     * 停止超期清理线程。
+     */
+    @PreDestroy
+    public void stop() {
+        ScheduledExecutorService scheduler = this.purgeScheduler;
+        if (scheduler != null) {
+            scheduler.shutdownNow();
+            purgeScheduler = null;
+        }
+    }
+
+    /**
+     * 清理周期：TTL 的一半，收敛到 [1s, 60s]，保证过期帧至多滞后一个周期被清理。
+     */
+    private long purgeIntervalMs() {
+        return Math.max(1_000L, Math.min(properties.getPendingTtlMs() / 2, 60_000L));
+    }
+
+    private void purgeExpiredQuietly() {
+        try {
+            purgeExpired();
+        } catch (RuntimeException ex) {
+            // 定时任务异常仅记录，避免调度中断
+            log.error("下行缓冲超期清理异常", ex);
+        }
+    }
+
+    /**
+     * 清理全部已超期的暂存指令，并移除清空后的设备队列。由定时线程周期调用，也可手动触发。
+     *
+     * @return 本次清理的超期指令数
+     */
+    public int purgeExpired() {
+        long ttl = properties.getPendingTtlMs();
+        if (ttl <= 0 || queues.isEmpty()) {
+            return 0;
+        }
+        long now = System.currentTimeMillis();
+        int removed = 0;
+        for (Map.Entry<SessionKey, ConcurrentLinkedDeque<PendingFrame>> entry : queues.entrySet()) {
+            ConcurrentLinkedDeque<PendingFrame> deque = entry.getValue();
+            boolean changed = false;
+            for (PendingFrame pending : deque) {
+                if (now - pending.getEnqueuedAt() > ttl && deque.remove(pending)) {
+                    removed++;
+                    changed = true;
+                }
+            }
+            // 两参 remove：仅当队列仍指向同一实例且已清空时才移除，避免误删并发入队的新队列
+            if (changed && deque.isEmpty()) {
+                queues.remove(entry.getKey(), deque);
+            }
+        }
+        if (removed > 0) {
+            log.info("定时清理超期暂存指令 数量={}", removed);
+        }
+        return removed;
     }
 
     /**

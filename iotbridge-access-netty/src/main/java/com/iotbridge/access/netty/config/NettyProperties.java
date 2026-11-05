@@ -45,19 +45,22 @@ public class NettyProperties {
     private FrameMode frameMode = FrameMode.DELIMITER;
 
     /**
-     * 长度字段偏移（LENGTH_FIELD 生效）。SOS V3.0 为 9。
+     * 长度字段偏移（LENGTH_FIELD 生效）。<b>无协议默认值，LENGTH_FIELD 模式下必填</b>，
+     * 由具体协议指定（如 SOS V3.0 为 9）；缺失时启动失败并给出明确提示。
      */
-    private Integer lengthFieldOffset = 9;
+    private Integer lengthFieldOffset;
 
     /**
-     * 长度字段字节数（LENGTH_FIELD 生效）。SOS V3.0 为 2。
+     * 长度字段字节数（LENGTH_FIELD 生效）。<b>无协议默认值，LENGTH_FIELD 模式下必填</b>
+     * （如 SOS V3.0 为 2）。
      */
-    private Integer lengthFieldLength = 2;
+    private Integer lengthFieldLength;
 
     /**
-     * 长度修正值（LENGTH_FIELD 生效），补偿长度字段之后、数据体之外的尾字节。SOS V3.0 为 5（CRC2+帧尾3）。
+     * 长度修正值（LENGTH_FIELD 生效），补偿长度字段之后、数据体之外的尾字节。
+     * <b>无协议默认值，LENGTH_FIELD 模式下必填</b>（如 SOS V3.0 为 5 = CRC2+帧尾3）。
      */
-    private Integer lengthAdjustment = 5;
+    private Integer lengthAdjustment;
 
     /**
      * 输出前剥离的字节数（LENGTH_FIELD 生效），0 表示向下游传递完整帧。

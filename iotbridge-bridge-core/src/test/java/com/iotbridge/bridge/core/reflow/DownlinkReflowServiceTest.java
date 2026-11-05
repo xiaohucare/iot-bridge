@@ -55,7 +55,7 @@ class DownlinkReflowServiceTest {
         ChannelManager channelManager = mock(ChannelManager.class);
         when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(Boolean.TRUE);
 
-        new DownlinkReflowService(buffer, channelManager, registry).reflow(PT, "d");
+        new DownlinkReflowService(buffer, channelManager, registry, Runnable::run).reflow(PT, "d");
 
         verify(channelManager, times(2)).sendToDevice(eq(PT), eq("d"), any());
         assertEquals(0, buffer.pendingSize(PT, "d"));
@@ -75,7 +75,7 @@ class DownlinkReflowServiceTest {
         // 第一帧成功，第二帧失败 -> 仅剩余未发送的第二帧退回缓冲
         when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(Boolean.TRUE, Boolean.FALSE);
 
-        new DownlinkReflowService(buffer, channelManager, registry).reflow(PT, "d");
+        new DownlinkReflowService(buffer, channelManager, registry, Runnable::run).reflow(PT, "d");
 
         verify(channelManager, times(2)).sendToDevice(eq(PT), eq("d"), any());
         assertEquals(1, buffer.pendingSize(PT, "d"));
@@ -94,7 +94,7 @@ class DownlinkReflowServiceTest {
         when(registry.resolve(any())).thenReturn(codec);
         ChannelManager channelManager = mock(ChannelManager.class);
 
-        new DownlinkReflowService(buffer, channelManager, registry).reflow(PT, "d");
+        new DownlinkReflowService(buffer, channelManager, registry, Runnable::run).reflow(PT, "d");
 
         verify(channelManager, never()).sendToDevice(anyString(), anyString(), any());
         assertEquals(0, buffer.pendingSize(PT, "d"));
@@ -108,7 +108,7 @@ class DownlinkReflowServiceTest {
         ChannelManager channelManager = mock(ChannelManager.class);
         ProtocolCodecRegistry registry = mock(ProtocolCodecRegistry.class);
 
-        new DownlinkReflowService(buffer, channelManager, registry).reflow(PT, "d");
+        new DownlinkReflowService(buffer, channelManager, registry, Runnable::run).reflow(PT, "d");
 
         verify(channelManager, never()).sendToDevice(anyString(), anyString(), any());
     }
