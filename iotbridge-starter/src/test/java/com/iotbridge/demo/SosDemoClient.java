@@ -74,7 +74,7 @@ public final class SosDemoClient {
             channel.writeAndFlush(wrap(eventFrame));
             System.out.println("[sos-device] 已发送事件帧: " + ByteBufUtil.hexDump(eventFrame));
             System.out.println("[sos-device] 等待下行…… (对网关下发: "
-                    + "curl -XPOST localhost:8080/api/v1/devices/" + IMEI
+                    + "curl -XPOST http://localhost:8080/api/v1/devices/" + IMEI
                     + "/commands -H 'Content-Type: application/json' "
                     + "-d '{\"protocolType\":\"sos-c02\",\"command\":\"timeCalib\",\"params\":{\"vendor\":\"0001\"}}')");
 
