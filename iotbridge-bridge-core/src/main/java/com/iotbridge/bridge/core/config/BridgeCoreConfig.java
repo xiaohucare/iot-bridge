@@ -13,6 +13,6 @@ import org.springframework.context.annotation.Configuration;
  * @date 2026-11-05
  */
 @Configuration
-@EnableConfigurationProperties(DownlinkBufferProperties.class)
+@EnableConfigurationProperties({DownlinkBufferProperties.class, UplinkProperties.class})
 public class BridgeCoreConfig {
 }

@@ -1,6 +1,5 @@
 package com.iotbridge.mq.rabbit;
 
-import com.iotbridge.common.constant.IotbridgeConstants;
 import com.iotbridge.spi.handler.DownlinkDispatchHandler;
 import com.iotbridge.spi.model.DownlinkCommand;
 import com.rabbitmq.client.Channel;
@@ -39,16 +38,15 @@ public class DownlinkCommandConsumer {
     /**
      * 监听下行队列，处理单条指令（手动确认）。
      *
-     * <p>队列名走 {@code iotbridge.mq.downlink-queue} 配置（与队列声明、下行发布同源），缺省回退
-     * {@link IotbridgeConstants#QUEUE_DOWNLINK}；如此每实例可指定独立队列，多实例共存时不至于互抢同一队列。</p>
+     * <p>队列名取自声明的 {@code downlinkQueue} Bean：直连模式为 {@code iotbridge.mq.downlink-queue}，
+     * 一致哈希模式按实例隔离（{@code <queue>.<instanceId>}），保证每个实例只消费路由给自己的设备指令。</p>
      *
      * @param command     反序列化后的下行指令
      * @param channel     RabbitMQ 通道（用于手动 ack/nack）
      * @param deliveryTag 投递标签
      * @throws IOException 通道 IO 异常（ack/nack 失败时由容器按连接异常处理）
      */
-    @RabbitListener(queues = "${iotbridge.mq.downlink-queue:" + IotbridgeConstants.QUEUE_DOWNLINK + "}",
-            ackMode = "MANUAL")
+    @RabbitListener(queues = "#{downlinkQueue.name}", ackMode = "MANUAL")
     public void onMessage(DownlinkCommand command, Channel channel,
                           @Header(AmqpHeaders.DELIVERY_TAG) long deliveryTag) throws IOException {
         try {

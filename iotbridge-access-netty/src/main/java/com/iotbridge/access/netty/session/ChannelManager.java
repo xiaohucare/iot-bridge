@@ -68,7 +68,11 @@ public class ChannelManager {
         String channelKey = channel.id().asLongText();
         // 覆盖前清理旧的 deviceId 映射，避免通道泄漏
         Channel previous = deviceChannels.put(key, channel);
-        if (previous != null && previous != channel) {
+        if (previous == channel) {
+            // 同一连接持续上报：仅维护索引，不重复打日志（否则每帧一条 INFO 会淹没日志并增加 IO 开销）
+            return;
+        }
+        if (previous != null) {
             channelKeys.remove(previous.id().asLongText());
             // 旧连接关闭会触发其 channelInactive -> unbindByChannel；此时 key 已指向新通道，
             // 条件删除不会误清新会话
@@ -163,6 +167,12 @@ public class ChannelManager {
         Channel channel = deviceChannels.get(SessionKey.of(protocolType, deviceId));
         if (channel == null || !channel.isActive()) {
             log.warn("设备离线，下行丢弃 protocol={} deviceId={}", SessionKey.of(protocolType, deviceId)
+                    .getProtocolType(), deviceId);
+            return false;
+        }
+        if (!channel.isWritable()) {
+            // 出站缓冲超过高水位（慢设备/弱网）：继续写入会让内存持续膨胀，按「未送达」处理走离线暂存
+            log.warn("通道写缓冲已满，下行暂缓 protocol={} deviceId={}", SessionKey.of(protocolType, deviceId)
                     .getProtocolType(), deviceId);
             return false;
         }

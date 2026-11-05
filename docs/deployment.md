@@ -63,13 +63,36 @@ mvn -pl iotbridge-starter spring-boot:run -Dspring-boot.run.profiles=sos
 | `KAFKA_SERVERS` | `spring.kafka.bootstrap-servers` | localhost:9092 |
 | `RABBIT_HOST` / `RABBIT_PORT` | `spring.rabbitmq.host` / `.port` | localhost / 5672 |
 | `RABBIT_USER` / `RABBIT_PASS` | `spring.rabbitmq.username` / `.password` | guest / guest |
+| `IOTBRIDGE_API_KEY` | `iotbridge.admin.api-key` | 空（不鉴权） |
+| `HOSTNAME` | 多实例下行队列后缀 `iotbridge.mq.instance-id`（未显式配置时） | 容器主机名，非容器为 `local` |
 
 ```bash
 KAFKA_SERVERS=kafka:9092 RABBIT_HOST=rabbit RABBIT_USER=prod RABBIT_PASS=secret \
+IOTBRIDGE_API_KEY=<强随机串> \
   java -jar iotbridge-starter/target/iotbridge.jar --spring.profiles.active=sos
 ```
 
-其余可调项见 README《配置参考》表（`iotbridge.netty.*`、`iotbridge.mq.*`、`iotbridge.protocol.default`）。
+其余可调项见 README《配置参考》表（`iotbridge.netty.*`、`iotbridge.uplink.*`、`iotbridge.mq.*`、`iotbridge.admin.*`、`iotbridge.protocol.default`）。
+
+> 生产部署必须设置 `IOTBRIDGE_API_KEY`（未配置时启动仅告警，REST 接口对任何调用方开放），并建议通过 `server.ssl.*` 为 REST 端口开启 TLS；设备接入端口（9000/9001）为明文 TCP，如需链路加密应在网关前置 TLS 终结或专用安全网关。
+
+### 4.4 多实例部署
+
+多实例必须让同一设备的指令恒定命中同一实例，否则会出现「指令投到 A、设备连接在 B」的静默失败（旧配置下固定 routing key 还会因多队列绑定造成广播重复下发）：
+
+```yaml
+iotbridge:
+  mq:
+    downlink-exchange-type: consistent-hash   # 需启用 rabbitmq_consistent_hash_exchange 插件
+    instance-id: ""                           # 留空则取 HOSTNAME，容器内天然唯一
+```
+
+```bash
+# 确认插件已启用（3.8+ 镜像自带）
+rabbitmq-plugins enable rabbitmq_consistent_hash_exchange
+```
+
+启用后每实例队列为 `<downlink-queue>.<instance-id>`，以 `deviceId` 作 routing key 哈希，设备指令按哈希落到唯一队列。
 
 ## 5. 端到端验证
 
@@ -95,10 +118,11 @@ docker exec -it iotbridge-kafka /opt/kafka/bin/kafka-console-consumer.sh \
 ```bash
 curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
      -H 'Content-Type: application/json' \
+     -H "X-Api-Key: ${IOTBRIDGE_API_KEY}" \
      -d '{"protocolType":"sos-c02","command":"timeCalib","params":{"vendor":"0001"}}'
 ```
 
-成功响应：
+成功响应（失败时 HTTP 状态随错误类别返回 400/401/409/503，`code` 保留具体业务错误码）：
 
 ```json
 {"success":true,"code":"0","message":"成功","data":"<requestId-uuid>"}
@@ -132,11 +156,12 @@ REST 接口定义：
 
 ## 7. 日志
 
-- 门面：SLF4J + Logback；命名空间 `com.iotbridge` 默认 `DEBUG`，`root` 为 `INFO`。
+- 门面：SLF4J + Logback；命名空间 `com.iotbridge` 默认 `INFO`，`root` 为 `INFO`。
+- **会话登记日志已在每帧路径上消除**：同一连接重复上报不会再产生「设备上线」日志，只有首次绑定、重复上线踢旧连接、下线时才输出；排查某设备是否在持续上报请查看上行 Kafka 消费而非网关日志。
 - 调整级别示例：
 
   ```bash
-  java -jar iotbridge.jar --logging.level.com.iotbridge=INFO
+  java -jar iotbridge.jar --logging.level.com.iotbridge=DEBUG
   ```
 
 - 上行 Kafka 投递失败、下行 CRC 失败、设备离线丢弃等均有 `ERROR`/`WARN` 记录，便于定位。
@@ -149,6 +174,12 @@ REST 接口定义：
 | `CRC 校验失败` | 帧字节序/校验范围/数据被截断 | 核对 offset 9 处长度、`adjustment=5`、CRC 范围 `[0,11+N)` |
 | `未找到协议插件` | `protocolType` 拼写错误 / 插件 jar 未在 classpath | 确认 `META-INF/services` 注册与依赖打包 |
 | 下行无反应且日志 `设备离线` | 设备未在线或 `deviceId` 不一致 | 先 `GET /api/v1/devices/online` 确认在线及 deviceId；用上行返回的 IMEI 下发；确认已建立 TCP 会话并发过上行；如开启 `iotbridge.downlink.buffer-enabled`，离线指令会暂存并在设备上线后自动补发 |
+| REST 返回 401 `A0301` | 未带或错带 API Key | 请求头加 `X-Api-Key: <key>` 或 `Authorization: Bearer <key>`；确认网关进程的 `IOTBRIDGE_API_KEY` 与调用方一致 |
+| 启动失败 `默认协议 xxx 未注册` / `监听协议 xxx 未注册` | `iotbridge.protocol.default` 或 `listeners[].protocol-type` 拼写错误 / 插件未打包 | 按提示修正协议标识或补齐插件 jar；这是启动期 fail-fast 校验，避免带病运行 |
+| 启动失败 `监听地址重复` / `端口非法` | 两个 listener 绑定同一 host:port，或端口超出 1–65535 | 修正 listeners 端口；同实例重复绑定必然失败，提前拦截 |
+| 设备显示在线但下行长期失败 | 半开连接（设备断电/NAT 超时） | 检查是否误将 `reader-idle-seconds` 设为 0 关闭了空闲检测；默认 180s 会主动断开无上行连接 |
+| 日志 `通道写缓冲已满，下行暂缓` | 设备侧接收过慢，出站积压超过高水位 | 按需调整 `iotbridge.netty.write-buffer-high/low-water-mark`；或排查设备网络/处理能力，指令会按离线策略暂存或丢弃 |
+| 多实例下同一指令重复下发 / 下发到无连接的实例 | 仍使用 `direct` + 固定 routing key，多队列绑定被广播 | 设置 `iotbridge.mq.downlink-exchange-type=consistent-hash` 并启用 `rabbitmq_consistent_hash_exchange` 插件，见 4.4 |
 | Kafka/Rabbit 连接失败 | 地址/凭据错误或中间件未就绪 | 用环境变量覆盖 `KAFKA_SERVERS`、`RABBIT_*`；先起中间件再起网关 |
 | RabbitMQ 反复报 `channel error ... 406 PRECONDITION_FAILED - inequivalent arg 'x-dead-letter-exchange' for queue 'iotbridge.downlink'` | RabbitMQ 中已存在旧版本网关声明的同名队列（无死信参数）；RabbitMQ 不允许对已存在队列变更参数，新声明被拒绝 | 删除旧队列后重启网关，应用会按新声明（含死信参数）自动重建：管理台 http://localhost:15672 → Queues → Delete，或 `curl -u guest:guest -X DELETE http://localhost:15672/api/queues/%2F/iotbridge.downlink`。注意：删除会清空该队列未消费的下行指令 |
 

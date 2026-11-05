@@ -119,7 +119,7 @@ class DownlinkReflowServiceTest {
         ChannelManager channelManager = mock(ChannelManager.class);
         ProtocolCodecRegistry registry = mock(ProtocolCodecRegistry.class);
 
-        new DownlinkReflowService(buffer, channelManager, registry).reflow(PT, null);
+        new DownlinkReflowService(buffer, channelManager, registry, Runnable::run).reflow(PT, null);
 
         verify(channelManager, never()).sendToDevice(anyString(), anyString(), any());
     }

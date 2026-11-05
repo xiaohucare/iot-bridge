@@ -38,6 +38,12 @@ public class DownlinkBufferProperties {
      */
     private int maxPendingDevices = 10000;
 
+    /**
+     * 补发线程数：补发任务在独立线程池执行（不占 Netty IO 线程与 MQ 消费线程），
+     * 同会话仍由分段锁串行，不同设备可并行补发，避免个别慢设备拖住其他设备的补发。
+     */
+    private int reflowThreads = 4;
+
     public boolean isBufferEnabled() {
         return bufferEnabled;
     }
@@ -68,5 +74,13 @@ public class DownlinkBufferProperties {
 
     public void setMaxPendingDevices(int maxPendingDevices) {
         this.maxPendingDevices = maxPendingDevices;
+    }
+
+    public int getReflowThreads() {
+        return reflowThreads;
+    }
+
+    public void setReflowThreads(int reflowThreads) {
+        this.reflowThreads = reflowThreads;
     }
 }

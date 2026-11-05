@@ -48,6 +48,12 @@ public class DownlinkBuffer {
      */
     private final ConcurrentMap<SessionKey, ConcurrentLinkedDeque<PendingFrame>> queues = new ConcurrentHashMap<>();
 
+    /**
+     * 设备队列的创建顺序（近似 FIFO），供容量淘汰直接取队首候选，避免每次溢出都全表扫描 map。
+     * 队列被移除后会残留少量失效条目，取到失效条目时跳过，并在积累过多时压缩。
+     */
+    private final ConcurrentLinkedDeque<SessionKey> deviceOrder = new ConcurrentLinkedDeque<>();
+
     private final DownlinkBufferProperties properties;
 
     /**
@@ -184,6 +190,9 @@ public class DownlinkBuffer {
         // compute 持 bin 锁期间只做纯内存操作，被丢弃的指令带出来在锁外记录，避免日志 IO 放大锁竞争
         final PendingFrame[] droppedHolder = new PendingFrame[1];
         queues.compute(key, (k, deque) -> {
+            if (deque == null) {
+                deviceOrder.offerLast(k);
+            }
             ConcurrentLinkedDeque<PendingFrame> target = deque == null ? new ConcurrentLinkedDeque<>() : deque;
             while (target.size() >= perDeviceMax) {
                 droppedHolder[0] = target.pollFirst();
@@ -275,33 +284,41 @@ public class DownlinkBuffer {
      */
     public void clear() {
         queues.clear();
+        deviceOrder.clear();
     }
 
     /**
-     * 约束暂存设备总数不超上限：达到上限时淘汰「队首指令最陈旧」的设备队列。
+     * 约束暂存设备总数不超上限：达到上限时按「队列创建顺序」淘汰最陈旧设备的队列。
      *
-     * <p>在 {@code offer} 为新设备入队前调用（此路径为低频溢出路径，全表扫描可接受）。软上限：
-     * 并发下可能瞬时多出一两个设备，可接受。</p>
+     * <p>在 {@code offer} 为新设备入队前调用。候选直接从 {@link #deviceOrder} 取，避免全表扫描；
+     * 失效条目边取边跳过，条目数远大于存活队列数时压缩一次。软上限：并发下可能瞬时多出一两个设备，可接受。</p>
      */
     private void enforceDeviceCapacity() {
         int deviceCap = Math.max(MIN_LIMIT, properties.getMaxPendingDevices());
         if (queues.size() < deviceCap) {
             return;
         }
-        SessionKey victim = null;
-        long oldest = Long.MAX_VALUE;
-        for (Map.Entry<SessionKey, ConcurrentLinkedDeque<PendingFrame>> entry : queues.entrySet()) {
-            PendingFrame head = entry.getValue().peekFirst();
-            long headTime = head == null ? Long.MAX_VALUE : head.getEnqueuedAt();
-            if (headTime < oldest) {
-                oldest = headTime;
-                victim = entry.getKey();
+        SessionKey victim;
+        ConcurrentLinkedDeque<PendingFrame> removed = null;
+        while ((victim = deviceOrder.pollFirst()) != null) {
+            removed = queues.remove(victim);
+            if (removed != null) {
+                break;
             }
         }
-        if (victim != null) {
-            ConcurrentLinkedDeque<PendingFrame> removed = queues.remove(victim);
+        if (removed != null) {
             log.warn("待发设备数超上限 {}，淘汰最陈旧设备队列 protocol={} deviceId={} 丢弃指令数={}",
-                    deviceCap, victim.getProtocolType(), victim.getDeviceId(), removed == null ? 0 : removed.size());
+                    deviceCap, victim.getProtocolType(), victim.getDeviceId(), removed.size());
+        }
+        compactOrderIfNeeded();
+    }
+
+    /**
+     * 压缩失效条目：仅当顺序表明显大于存活队列数时执行一次 O(n) 清理，避免长期运行后残留膨胀。
+     */
+    private void compactOrderIfNeeded() {
+        if (deviceOrder.size() > queues.size() * 2L + 64L) {
+            deviceOrder.removeIf(key -> !queues.containsKey(key));
         }
     }
 }

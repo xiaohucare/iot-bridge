@@ -19,6 +19,11 @@ public enum ErrorCodeEnum {
     BAD_REQUEST("A0400", "请求参数非法"),
 
     /**
+     * 未通过鉴权（缺少或错误的 API Key）。
+     */
+    UNAUTHORIZED("A0301", "未通过鉴权"),
+
+    /**
      * 系统内部错误。
      */
     SYSTEM_ERROR("B0001", "系统内部错误"),
@@ -41,7 +46,12 @@ public enum ErrorCodeEnum {
     /**
      * 设备当前离线，指令无法下发。
      */
-    DEVICE_OFFLINE("B0200", "设备离线");
+    DEVICE_OFFLINE("B0200", "设备离线"),
+
+    /**
+     * 下行指令发布失败（broker 未确认、不可路由或超时）。
+     */
+    DOWNLINK_PUBLISH_FAILED("B0300", "下行指令发布失败");
 
     private final String code;
     private final String message;

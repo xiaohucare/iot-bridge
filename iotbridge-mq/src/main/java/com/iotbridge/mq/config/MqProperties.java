@@ -40,6 +40,87 @@ public class MqProperties {
      */
     private long downlinkConfirmTimeoutMs = 5000L;
 
+    /**
+     * 下行交换机类型：{@code direct}（单实例，固定路由键）或 {@code consistent-hash}（多实例，按 deviceId 路由）。
+     *
+     * <p>多实例部署必须使用 {@code consistent-hash}：每个实例声明独立队列（见 {@link #effectiveQueueName()}）
+     * 绑定一致哈希交换机，发布端以 deviceId 作为 routing key，同一设备恒定命中同一实例的队列，
+     * 避免直连交换机「同 routing key 绑多个队列 = 广播」造成的重复下发与随机错投。</p>
+     */
+    private String downlinkExchangeType = EXCHANGE_TYPE_DIRECT;
+
+    /**
+     * 实例标识（用于一致哈希模式下的独立队列命名），缺省取环境变量 {@code HOSTNAME}，再退化为 {@code local}。
+     */
+    private String instanceId = "";
+
+    /**
+     * 直连交换机类型标识。
+     */
+    public static final String EXCHANGE_TYPE_DIRECT = "direct";
+
+    /**
+     * 一致哈希交换机类型标识。
+     */
+    public static final String EXCHANGE_TYPE_CONSISTENT_HASH = "consistent-hash";
+
+    /**
+     * 是否启用一致哈希路由（多实例）。
+     *
+     * @return 启用返回 {@code true}
+     */
+    public boolean isConsistentHash() {
+        return EXCHANGE_TYPE_CONSISTENT_HASH.equalsIgnoreCase(downlinkExchangeType);
+    }
+
+    /**
+     * 生效的实例标识。
+     *
+     * @return 实例标识
+     */
+    public String effectiveInstanceId() {
+        if (instanceId != null && !instanceId.isBlank()) {
+            return instanceId;
+        }
+        String hostname = System.getenv("HOSTNAME");
+        return hostname == null || hostname.isBlank() ? "local" : hostname;
+    }
+
+    /**
+     * 生效的下行队列名：一致哈希模式下按实例隔离，直连模式沿用配置名。
+     *
+     * @return 队列名
+     */
+    public String effectiveQueueName() {
+        return isConsistentHash() ? downlinkQueue + "." + effectiveInstanceId() : downlinkQueue;
+    }
+
+    /**
+     * 生效的发布路由键：一致哈希模式以 deviceId 路由，直连模式用配置的固定键。
+     *
+     * @param deviceId 设备标识
+     * @return 路由键
+     */
+    public String effectiveRoutingKey(String deviceId) {
+        return isConsistentHash() ? deviceId : downlinkRoutingKey;
+    }
+
+    public String getDownlinkExchangeType() {
+        return downlinkExchangeType;
+    }
+
+    public void setDownlinkExchangeType(String downlinkExchangeType) {
+        this.downlinkExchangeType = downlinkExchangeType;
+    }
+
+    public String getInstanceId() {
+        return instanceId;
+    }
+
+    public void setInstanceId(String instanceId) {
+        this.instanceId = instanceId;
+    }
+
     public String getUplinkTopic() {
         return uplinkTopic;
     }

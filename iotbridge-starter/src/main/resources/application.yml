@@ -15,6 +15,8 @@ spring:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
         delivery.timeout.ms: 120000
+        # broker 不可用/缓冲满时的最长阻塞：快速失败而不是阻塞默认 60s（上行处理线程会随之中断该分片）
+        max.block.ms: 3000
   # RabbitMQ：下行指令收发
   rabbitmq:
     host: ${RABBIT_HOST:localhost}
@@ -55,6 +57,12 @@ iotbridge:
     length-field-length: 2
     length-adjustment: 5
     initial-bytes-to-strip: 0
+    # 读空闲超时（秒）：超时未收到上行即关闭连接，清理设备断电/NAT 超时留下的半开连接；<=0 关闭检测。
+    # 应大于设备心跳间隔（SOS 心跳 60s 时建议 180s）。
+    reader-idle-seconds: 180
+    # 出站写缓冲水位（字节）：超过高水位视为不可写，下行改走离线暂存，防止慢设备撑爆内存
+    write-buffer-high-water-mark: 65536
+    write-buffer-low-water-mark: 32768
     # 多协议监听：每个端口绑定一种上行协议及其切帧方式，未填项继承上面的全局默认。
     # 留空 listeners 则退回上面的单一全局监听（向后兼容）。
     listeners:
@@ -68,11 +76,24 @@ iotbridge:
         protocol-type: demo-text
         frame-mode: DELIMITER
         max-frame-length: 65536
+  # 上行处理线程池：解码/会话登记/Kafka 投递在工作线程执行，不占用 Netty IO 线程。
+  # 按远端地址哈希分片，同连接帧有序；队列有界，溢出丢弃并告警形成背压保护。
+  uplink:
+    worker-threads: 4
+    queue-capacity: 10000
+  # 管理端 REST 鉴权：api-key 非空时校验 X-Api-Key / Authorization: Bearer；留空则关闭（仅限本地开发）
+  admin:
+    api-key: ${IOTBRIDGE_API_KEY:}
   mq:
     uplink-topic: iotbridge.uplink
     downlink-queue: iotbridge.downlink
     downlink-exchange: iotbridge.downlink.exchange
     downlink-routing-key: downlink
+    # 下行交换机类型：direct（单实例） / consistent-hash（多实例，按 deviceId 路由到对应实例队列）
+    # 多实例部署必须用 consistent-hash，否则直连交换机同键多队列会广播造成重复下发
+    downlink-exchange-type: direct
+    # 实例标识：一致哈希模式下用于隔离各实例队列名，缺省取环境变量 HOSTNAME
+    instance-id: ""
     # 下行发布同步等待 broker confirm 的超时（毫秒）；nack/超时即向 REST 返回失败，避免假成功
     downlink-confirm-timeout-ms: 5000
   # 下行离线暂存重投：默认关闭；开启后设备离线时按 deviceId 暂存原始指令，设备重新上线（收到上行）时重新编码并按序补发
@@ -81,8 +102,10 @@ iotbridge:
     max-pending-per-device: 100
     max-pending-devices: 10000
     pending-ttl-ms: 300000
+    # 补发线程数：不同设备可并行补发，同设备顺序由分段锁保证
+    reflow-threads: 4
 
 logging:
   level:
     root: INFO
-    com.iotbridge: DEBUG
+    com.iotbridge: INFO

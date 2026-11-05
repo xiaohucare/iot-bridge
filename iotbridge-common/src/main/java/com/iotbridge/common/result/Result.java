@@ -89,6 +89,18 @@ public class Result<T> {
         return new Result<>(Boolean.FALSE, errorCode.getCode(), message, null);
     }
 
+    /**
+     * 以已确定的错误码字符串构造失败响应（异常已携带具体 code 时使用，避免被统一覆盖为系统错误）。
+     *
+     * @param code    错误码
+     * @param message 错误描述
+     * @param <T>     数据类型
+     * @return 失败响应
+     */
+    public static <T> Result<T> fail(String code, String message) {
+        return new Result<>(Boolean.FALSE, code, message, null);
+    }
+
     public Boolean getSuccess() {
         return success;
     }

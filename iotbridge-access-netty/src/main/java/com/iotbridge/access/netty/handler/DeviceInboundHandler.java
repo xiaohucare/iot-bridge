@@ -7,6 +7,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.timeout.IdleStateEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -79,5 +80,17 @@ public class DeviceInboundHandler extends SimpleChannelInboundHandler<ByteBuf> {
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("设备通道异常 remote={} 关闭连接", ctx.channel().remoteAddress(), cause);
         ctx.close();
+    }
+
+    @Override
+    public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+        if (evt instanceof IdleStateEvent) {
+            // 读空闲超时：设备已失联（断电/NAT 超时等），主动断链以清理会话与资源
+            log.warn("设备空闲超时，关闭连接 remote={} state={}", ctx.channel().remoteAddress(),
+                    ((IdleStateEvent) evt).state());
+            ctx.close();
+            return;
+        }
+        super.userEventTriggered(ctx, evt);
     }
 }

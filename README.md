@@ -31,11 +31,14 @@
 
 ## 1. 特性
 
-- **协议插件化**：实现 `ProtocolCodec` SPI + `META-INF/services` 注册，网关启动自动发现，按 `protocolType` 路由。
+- **协议插件化**：实现 `ProtocolCodec` SPI + `META-INF/services` 注册，网关启动自动发现，按 `protocolType` 路由；启动时校验默认协议与各监听绑定的协议均已注册，配置写错直接启动失败。
 - **全双工转发**：上行 TCP→Kafka，下行 REST→RabbitMQ→TCP，链路解耦、可独立伸缩。
 - **文本/二进制并存**：Netty 帧切分支持行分隔（`DELIMITER`）与长度字段（`LENGTH_FIELD`）两种模式，可通过配置切换。
+- **上行不占 IO 线程**：入站回调仅投递任务，解码/会话登记/Kafka 投递在按连接哈希分片的有界工作线程池执行，Kafka 抖动不会拖垮 Netty EventLoop。
 - **会话管理**：`ChannelManager` 维护 `(protocolType, deviceId) <-> Channel` 双向映射，会话按「协议 + 设备号」复合键寻址，支持设备上下线清理与按设备寻址下发；不同协议下的相同 `deviceId` 各自独立，互不覆盖。
+- **连接活性检测**：读空闲超时自动断链，清理设备断电/NAT 超时留下的半开连接，避免 `isActive()` 长期为真造成在线误报。
 - **离线暂存重投（可选）**：开启后设备离线期间的下行按 `(protocolType, deviceId)` 暂存**原始指令**（有界 + TTL），设备重新上线后按会话串行、重新编码再补发（规避时间戳类指令失效、发送失败退回剩余帧），降低离线丢包。
+- **REST 鉴权**：可配置 API Key（`X-Api-Key` / `Authorization: Bearer`），常量时间比较；未配置时启动告警。
 - **优雅生命周期**：`GatewayLifecycle`（`SmartLifecycle`）随 Spring 容器自动启停 Netty 服务端。
 
 ## 2. 技术栈
@@ -52,8 +55,9 @@
 
 ```
 上行:  设备 --TCP--> [access-netty 帧切分 + DeviceInboundHandler]
-                        --UplinkFrameEvent--> [bridge-core UplinkDispatcher: SPI decode]
-                        --JSON--> [mq KafkaUplinkProducer] --Kafka--> 业务平台
+                     --UplinkFrameEvent--> [bridge-core UplinkDispatcher: 投递到分片工作线程]
+                     [工作线程: SPI decode -> 会话登记 -> Kafka 投递 -> 上线补发]
+                     --JSON--> [mq KafkaUplinkProducer] --Kafka--> 业务平台
 
 下行:  业务平台 --REST--> [admin CommandController]
                         --JSON--> [mq RabbitDownlinkPublisher] --RabbitMQ-->
@@ -67,7 +71,7 @@
 ```
 iotbridge (parent, pom)
 ├── iotbridge-common        统一响应 Result / 错误码 ErrorCodeEnum / 异常 / JSON 工具 / 常量
-├── iotbridge-spi           协议插件契约：ProtocolCodec + UplinkMessage/DownlinkCommand + DownlinkDispatchHandler + FrameRule
+├── iotbridge-spi           协议插件契约：ProtocolCodec + UplinkMessage/DownlinkCommand + DownlinkDispatchHandler
 ├── iotbridge-plugin-demo   示例协议插件（行文本 demo-text），ServiceLoader 注册
 ├── iotbridge-plugin-sos    SOS-C02/C03B/W03-A/C03-AO 消防设备协议 V3.0（二进制帧 + CRC16）
 ├── iotbridge-mq            Kafka 上行生产者 + RabbitMQ 下行消费者/发布者
@@ -140,7 +144,7 @@ iotbridge (parent, pom)
 
 ### 5.2 下行（RabbitMQ）
 
-`RabbitDownlinkPublisher` 经直连交换机 `iotbridge.downlink.exchange`（路由键 `downlink`）投递 `DownlinkCommand`（JSON）到持久队列 `iotbridge.downlink`：
+`RabbitDownlinkPublisher` 经 `iotbridge.downlink.exchange` 投递 `DownlinkCommand`（JSON）到持久队列 `iotbridge.downlink`。默认直连交换机 + 固定路由键 `downlink`（单实例）；设置 `iotbridge.mq.downlink-exchange-type=consistent-hash` 后改用一致哈希交换机，以 `deviceId` 作路由键、每实例队列独立，实现多实例按设备路由：
 
 ```json
 {
@@ -159,6 +163,9 @@ iotbridge (parent, pom)
 ### 5.3 统一响应与错误码
 
 REST 统一返回 `Result<T>`：`{ "success": bool, "code": string, "message": string, "data": ... }`。
+
+- 启用鉴权（`iotbridge.admin.api-key` 非空）时需带 `X-Api-Key: <key>`（或 `Authorization: Bearer <key>`），否则返回 401 + `A0301`。
+- 业务异常保留具体错误码（如 `B0200` 设备离线、`B0300` 下行发布失败），并按类别映射 HTTP 状态（400/401/409/503），不再统一返回 200 的系统错误。
 
 | 错误码 | 含义 |
 | --- | --- |
@@ -387,16 +394,24 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 | `iotbridge.netty.length-field-length` | 长度字段字节数（LENGTH_FIELD 模式必填，SOS=2） | 无默认，缺失启动失败 |
 | `iotbridge.netty.length-adjustment` | 长度修正值（LENGTH_FIELD 模式必填，SOS=CRC2+帧尾3=5） | 无默认，缺失启动失败 |
 | `iotbridge.netty.initial-bytes-to-strip` | 输出前剥离字节（0=保留整帧） | 0 |
+| `iotbridge.netty.reader-idle-seconds` | 读空闲超时（秒），超时主动断链清理半开连接；`<=0` 关闭检测 | 180 |
+| `iotbridge.netty.write-buffer-high-water-mark` / `low-water-mark` | 出站写缓冲水位（字节），超过高水位视为不可写，下行改走离线暂存 | 65536 / 32768 |
 | `iotbridge.netty.listeners[]` | 多协议监听（每项 `name`/`host`/`port`/`protocol-type`/`frame-mode`/长度字段参，未填继承全局）；为空则合成单监听 | 空（用扁平字段） |
+| `iotbridge.uplink.worker-threads` | 上行处理分片数（按连接哈希固定分片，同连接帧有序；不占 Netty IO 线程） | 4 |
+| `iotbridge.uplink.queue-capacity` | 上行待处理帧总队列容量，溢出丢弃并采样告警（背压保护） | 10000 |
+| `iotbridge.admin.api-key` | REST 鉴权 API Key（`X-Api-Key` / `Authorization: Bearer`）；为空关闭鉴权并启动告警 | 空 |
 | `iotbridge.mq.uplink-topic` | 上行 Kafka 主题 | iotbridge.uplink |
-| `iotbridge.mq.downlink-queue` | 下行 RabbitMQ 队列（队列声明、消费监听、发布路由均取此值；多实例可各自指定独立队列避免互抢） | iotbridge.downlink |
+| `iotbridge.mq.downlink-queue` | 下行 RabbitMQ 队列；一致哈希模式下自动追加 `.<instance-id>` 做实例隔离 | iotbridge.downlink |
 | `iotbridge.mq.downlink-exchange` | 下行交换机 | iotbridge.downlink.exchange |
-| `iotbridge.mq.downlink-routing-key` | 下行路由键 | downlink |
+| `iotbridge.mq.downlink-routing-key` | 直连模式的下行路由键 | downlink |
+| `iotbridge.mq.downlink-exchange-type` | 下行交换机类型：`direct`（单实例）/ `consistent-hash`（多实例，按 deviceId 路由） | direct |
+| `iotbridge.mq.instance-id` | 实例标识（一致哈希模式队列命名），缺省取环境变量 `HOSTNAME` | 空 |
 | `iotbridge.mq.downlink-confirm-timeout-ms` | 下行发布等待 broker confirm 超时（nack/超时即向 REST 返回失败，避免假成功） | 5000 |
 | `iotbridge.downlink.buffer-enabled` | 设备离线时是否暂存待重投 | false |
 | `iotbridge.downlink.max-pending-per-device` | 单设备最大暂存指令数（超限丢最旧） | 100 |
 | `iotbridge.downlink.max-pending-devices` | 同时暂存的最大设备数（超限淘汰最陈旧设备队列） | 10000 |
 | `iotbridge.downlink.pending-ttl-ms` | 暂存指令存活毫秒（`<=0` 不过期） | 300000 |
+| `iotbridge.downlink.reflow-threads` | 补发线程数（不同设备并行补发，同设备由分段锁串行） | 4 |
 | `spring.kafka.bootstrap-servers` | Kafka 地址 | localhost:9092 |
 | `spring.kafka.producer.*` | Kafka 生产者可靠性参数（默认 `acks=all` + 幂等生产者，重试 10 次）；为生产者唯一配置来源，代码不再硬编码 | 见 application.yml |
 | `spring.rabbitmq.host` / `port` / `username` / `password` | RabbitMQ 连接 | localhost:5672 / guest / guest |
@@ -426,16 +441,17 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 mvn test
 ```
 
-共 **37** 个用例，全部通过：
+共 **63** 个用例，全部通过：
 
 | 模块 | 测试类 | 数量 | 覆盖 |
 | --- | --- | --- | --- |
 | plugin-demo | `DemoTextCodecTest` | 3 | 编解码往返、ServiceLoader 发现 |
 | plugin-sos | `Crc16XmodemTest` | 2 | CRC16-XMODEM 标准向量 |
 | plugin-sos | `SosProtocolCodecTest` | 9 | 各命令解码、编码回解析自洽、篡改 CRC 必失败、ServiceLoader 发现 |
-| access-netty | `NettyTcpServerTest` | 5 | 多监听解析、全局默认继承、LENGTH_FIELD 必填 fail-fast |
+| access-netty | `NettyTcpServerTest` | 7 | 多监听解析、全局默认继承、LENGTH_FIELD 必填 fail-fast、端口/重复地址校验 |
+| bridge-core | `ProtocolStartupValidatorTest` | 4 | 默认协议与监听协议启动校验、缺失即失败 |
 | bridge-core | `ProtocolCodecRegistryTest` | 3 | 插件加载与回退解析 |
-| bridge-core | `ChannelManagerTest` | 8 | 会话注册/覆盖/下线/协议隔离/重复上线踢旧连接/设备索引 |
+| bridge-core | `ChannelManagerTest` | 9 | 会话注册/覆盖/下线/协议隔离/重复上线踢旧连接/设备索引/写缓冲满拒绝写入 |
 | bridge-core | `DownlinkBufferTest` | 10 | 暂存/补发/容量/TTL/超期定时清理/协议隔离 |
 | bridge-core | `DownlinkDispatcherTest` | 5 | 离线暂存、双检补发、毒消息吞掉 |
 | bridge-core | `DownlinkReflowServiceTest` | 5 | 按序补发、失败退回、编码失败跳过 |
@@ -464,10 +480,15 @@ iot-bridge/
 ## 14. 设计说明与限制
 
 - **上行多协议**：上行按接入端口绑定的协议（`iotbridge.netty.listeners[].protocol-type`）解码，同一实例可在不同端口并行跑多种协议（如 9000=sos-c02 LENGTH_FIELD、9001=demo-text DELIMITER）；未绑定端口回退默认协议。单端口内的自动协议识别（根据首帧内容嗅探）尚未实现，不同帧长的二进制协议仍需分端口接入。
+- **上行线程模型**：Netty 入站回调只做「按远端地址哈希取分片 + 提交任务」，解码、会话登记、Kafka 投递与上线补发全部在独立单线程分片执行。同连接帧在固定分片内串行（保序），分片间并行；队列有界，溢出丢弃并采样告警。Kafka `max.block.ms` 显式设为 3s，broker 抖动最多影响单个分片而不是整条 EventLoop。
+- **连接活性**：`iotbridge.netty.reader-idle-seconds`（默认 180s）开启读空闲检测，超时主动断链，清理断电/NAT 超时留下的半开连接；出站写缓冲设置高低水位，超过高水位视为不可写，下行按未送达处理，避免慢设备撑爆内存。
 - **下行协议路由**：下行按 `DownlinkCommand.protocolType` 经 `resolve()` 选择插件，为空回退默认。
+- **多实例下行路由**：单实例用 `direct` 交换机 + 固定路由键；多实例必须设置 `downlink-exchange-type=consistent-hash`，以 `deviceId` 作路由键、每实例队列独立（`<queue>.<instance-id>`），设备指令恒定命中同一实例队列，避免直连交换机「同键多队列 = 广播」导致的重复下发与随机错投。一致哈希依赖 RabbitMQ `rabbitmq_consistent_hash_exchange` 插件（3.8+ 随镜像提供，需启用）。
 - **会话隔离**：设备会话（在线注册、下行投递、离线暂存与补发）统一以 `SessionKey`（`protocolType` + `deviceId`）为复合键，不同协议下的相同 `deviceId` 各自独立、互不覆盖；`ChannelManager` 快照按协议、设备号升序输出，运维查在线可跨协议聚合或按 `protocol` 精确判定。
-- **可靠性**：上行 Kafka 生产者 `acks=all` + 幂等生产者（重试不重复），参数统一经 `spring.kafka.producer.*` 配置；下行 RabbitMQ 发布端同步等待 broker confirm（nack/超时即向 REST 返回失败，杜绝假成功），消费端手动 ack，处理异常与毒消息经死信参数转入 `<下行队列>.dlq`；下行写通道同步等待真实发送结果（有界超时），写失败按设备离线策略处理。
-- **在线判定即写即发（可选缓冲重投）**：设备离线时默认丢弃并告警；开启 `iotbridge.downlink.buffer-enabled` 后按 `(protocolType, deviceId)` 暂存**原始下行指令**（有界 + TTL），设备重新上线（收到上行）时由 `DownlinkReflowService` 在独立补发线程（不占 Netty IO 线程）**按会话串行、以当前指令重新编码后**按序补发（规避 `timeCalib` 等含时间戳指令在离线期间失效）；补发中发送失败则中断并把剩余帧按原序退回缓冲，等待下次上线，杜绝静默丢失。超期暂存由后台定时线程周期清理。缓冲仅存于当前实例内存，进程重启清空、多实例不共享。
+- **可靠性**：上行 Kafka 生产者 `acks=all` + 幂等生产者（重试不重复），参数统一经 `spring.kafka.producer.*` 配置；下行 RabbitMQ 发布端同步等待 broker confirm（nack/超时即向 REST 返回 503 + `B0300`），消费端手动 ack，处理异常与毒消息经死信参数转入 `<下行队列>.dlq`；下行写通道同步等待真实发送结果（有界超时），写失败或缓冲超水位按设备离线策略处理。
+- **在线判定即写即发（可选缓冲重投）**：设备离线时默认丢弃并告警；开启 `iotbridge.downlink.buffer-enabled` 后按 `(protocolType, deviceId)` 暂存**原始下行指令**（有界 + TTL），设备重新上线（收到上行）时由 `DownlinkReflowService` 在独立补发线程池（不占 Netty IO 线程，不同设备并行、同会话分段锁串行）**以当前指令重新编码后**按序补发（规避 `timeCalib` 等含时间戳指令在离线期间失效）；补发中发送失败则中断并把剩余帧按原序退回缓冲，等待下次上线，杜绝静默丢失。超期暂存由后台定时线程周期清理。缓冲仅存于当前实例内存，进程重启清空、多实例不共享。
+- **错误码与 HTTP 状态**：业务异常保留原始 `code`，并按类别映射 400/401/409/503，不再一律 200 + 系统错误。
 - **会话互踢**：同一 `(protocolType, deviceId)` 重复上线时新连接顶替旧连接，旧 TCP 连接被主动关闭，防止僵尸连接占用资源。
-- **未包含**：设备鉴权、指令幂等与应答确认闭环、设备影子持久化、集群化会话共享、指标监控等——接口位已预留，可迭代增强。
+- **安全**：REST 提供 API Key 鉴权（`iotbridge.admin.api-key`，`X-Api-Key` 或 `Authorization: Bearer`，常量时间比较），生产环境请同时通过 `server.ssl.*` 为 REST 开启 TLS；设备接入侧（9000/9001）为明文 TCP，如需链路加密需在设备与网关之间加 TLS 终结或专用安全网关。
+- **未包含**：设备级鉴权（设备注册白名单/证书）、指令幂等与应答确认闭环、设备影子持久化、集群化会话共享（跨实例会话仍各自持有，多实例需配合一致哈希路由）、指标监控等——接口位已预留，可迭代增强。
 - **SOS 样例帧**：因协议文档样例中厂商码/CRC 为占位，测试采用“自造合法帧 + 回解析自洽 + 篡改 CRC 必失败”策略；如有含真实值的完整样例帧，可补充逐字节比对用例。

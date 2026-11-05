@@ -68,10 +68,51 @@ public class NettyProperties {
     private Integer initialBytesToStrip = 0;
 
     /**
+     * 读空闲超时（秒）：超过该时长未收到任何上行帧即判定连接失效并主动关闭，{@code <=0} 表示不检测。
+     * 用于清理设备断电、NAT 超时等原因留下的半开连接，避免 {@code isActive()} 长期为真造成在线误报。
+     * 取值应大于设备心跳间隔（如心跳 60s 时建议 180s）。
+     */
+    private Integer readerIdleSeconds = 180;
+
+    /**
+     * 出站写缓冲高水位（字节）：通道待发送数据超过该值时视为不可写，下行改走离线暂存，避免慢设备撑爆内存。
+     */
+    private Integer writeBufferHighWaterMark = 64 * 1024;
+
+    /**
+     * 出站写缓冲低水位（字节）：待发送数据回落到该值以下后恢复可写。
+     */
+    private Integer writeBufferLowWaterMark = 32 * 1024;
+
+    /**
      * 多协议监听列表。为空时由上面的扁平字段合成单一监听（向后兼容）；
      * 非空时每个监听绑定一个端口、一种协议与其切帧方式，未填项继承全局默认。
      */
     private List<Listener> listeners = new ArrayList<>();
+
+    public Integer getReaderIdleSeconds() {
+        return readerIdleSeconds;
+    }
+
+    public void setReaderIdleSeconds(Integer readerIdleSeconds) {
+        this.readerIdleSeconds = readerIdleSeconds;
+    }
+
+    public Integer getWriteBufferHighWaterMark() {
+        return writeBufferHighWaterMark;
+    }
+
+    public void setWriteBufferHighWaterMark(Integer writeBufferHighWaterMark) {
+        this.writeBufferHighWaterMark = writeBufferHighWaterMark;
+    }
+
+    public Integer getWriteBufferLowWaterMark() {
+        return writeBufferLowWaterMark;
+    }
+
+    public void setWriteBufferLowWaterMark(Integer writeBufferLowWaterMark) {
+        this.writeBufferLowWaterMark = writeBufferLowWaterMark;
+    }
 
     public List<Listener> getListeners() {
         return listeners;

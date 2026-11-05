@@ -54,8 +54,10 @@ class UplinkDispatcherTest {
         ChannelManager channelManager = mock(ChannelManager.class);
         UplinkProducer producer = mock(UplinkProducer.class);
         Channel channel = mock(Channel.class);
-        DownlinkReflowService reflowService = new DownlinkReflowService(buffer(false), channelManager, registry);
-        UplinkDispatcher dispatcher = new UplinkDispatcher(registry, channelManager, producer, reflowService);
+        DownlinkReflowService reflowService = new DownlinkReflowService(buffer(false), channelManager, registry,
+                Runnable::run);
+        UplinkDispatcher dispatcher = new UplinkDispatcher(registry, channelManager, producer, reflowService,
+                Runnable::run);
 
         UplinkFrameEvent event = new UplinkFrameEvent(channel, new byte[]{1}, "127.0.0.1:1", "demo-text");
         dispatcher.onUplinkFrame(event);
@@ -84,7 +86,8 @@ class UplinkDispatcherTest {
         Channel channel = mock(Channel.class);
 
         DownlinkReflowService reflowService = new DownlinkReflowService(buffer, channelManager, registry, Runnable::run);
-        UplinkDispatcher dispatcher = new UplinkDispatcher(registry, channelManager, producer, reflowService);
+        UplinkDispatcher dispatcher = new UplinkDispatcher(registry, channelManager, producer, reflowService,
+                Runnable::run);
         dispatcher.onUplinkFrame(eventOf(channel));
 
         verify(channelManager).register(eq("sos-c02"), eq("dev1"), eq(channel));
@@ -110,7 +113,8 @@ class UplinkDispatcherTest {
         Channel channel = mock(Channel.class);
 
         DownlinkReflowService reflowService = new DownlinkReflowService(buffer, channelManager, registry, Runnable::run);
-        UplinkDispatcher dispatcher = new UplinkDispatcher(registry, channelManager, producer, reflowService);
+        UplinkDispatcher dispatcher = new UplinkDispatcher(registry, channelManager, producer, reflowService,
+                Runnable::run);
         dispatcher.onUplinkFrame(eventOf(channel));
 
         verify(channelManager).register(eq("sos-c02"), eq("dev1"), eq(channel));

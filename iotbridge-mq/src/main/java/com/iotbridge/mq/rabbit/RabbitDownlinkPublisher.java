@@ -48,7 +48,8 @@ public class RabbitDownlinkPublisher implements DownlinkPublisher {
             return;
         }
         String exchange = mqProperties.getDownlinkExchange();
-        String routingKey = mqProperties.getDownlinkRoutingKey();
+        // 一致哈希模式下以 deviceId 作路由键，由 broker 恒定分发到持有该设备的实例队列
+        String routingKey = mqProperties.effectiveRoutingKey(command.getDeviceId());
         String requestId = command.getRequestId() == null ? UUID.randomUUID().toString() : command.getRequestId();
         CorrelationData correlationData = new CorrelationData(requestId);
         rabbitTemplate.convertAndSend(exchange, routingKey, command, correlationData);
@@ -57,15 +58,17 @@ public class RabbitDownlinkPublisher implements DownlinkPublisher {
             CorrelationData.Confirm confirm = correlationData.getFuture()
                     .get(mqProperties.getDownlinkConfirmTimeoutMs(), TimeUnit.MILLISECONDS);
             if (confirm == null || !confirm.isAck()) {
-                throw new BridgeException(ErrorCodeEnum.SYSTEM_ERROR,
+                throw new BridgeException(ErrorCodeEnum.DOWNLINK_PUBLISH_FAILED,
                         "RabbitMQ 未确认下行指令 requestId=" + requestId
                                 + (confirm == null ? "" : " reason=" + confirm.getReason()));
             }
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            throw new BridgeException(ErrorCodeEnum.SYSTEM_ERROR, "等待下行指令确认被中断 requestId=" + requestId, ex);
+            throw new BridgeException(ErrorCodeEnum.DOWNLINK_PUBLISH_FAILED,
+                    "等待下行指令确认被中断 requestId=" + requestId, ex);
         } catch (ExecutionException | TimeoutException ex) {
-            throw new BridgeException(ErrorCodeEnum.SYSTEM_ERROR, "等待下行指令确认失败 requestId=" + requestId, ex);
+            throw new BridgeException(ErrorCodeEnum.DOWNLINK_PUBLISH_FAILED,
+                    "等待下行指令确认失败 requestId=" + requestId, ex);
         }
         if (log.isDebugEnabled()) {
             log.debug("下行指令已发布并确认 exchange={} routingKey={} deviceId={} requestId={}", exchange, routingKey,

@@ -112,6 +112,34 @@ class NettyTcpServerTest {
     }
 
     @Test
+    void duplicateListenerAddressFailsFast() {
+        // 两个监听绑定同一地址必然绑定失败，提前给出明确原因
+        NettyProperties props = globals();
+        Listener first = new Listener();
+        first.setName("a");
+        first.setPort(9000);
+        first.setProtocolType("sos-c02");
+        Listener second = new Listener();
+        second.setName("b");
+        second.setPort(9000);
+        second.setProtocolType("demo-text");
+        props.setListeners(Arrays.asList(first, second));
+
+        assertThrows(IllegalStateException.class, () -> NettyTcpServer.resolveEndpoints(props));
+    }
+
+    @Test
+    void invalidPortFailsFast() {
+        NettyProperties props = globals();
+        Listener bad = new Listener();
+        bad.setName("bad-port");
+        bad.setPort(0);
+        props.setListeners(Collections.singletonList(bad));
+
+        assertThrows(IllegalStateException.class, () -> NettyTcpServer.resolveEndpoints(props));
+    }
+
+    @Test
     void delimiterModeDoesNotRequireLengthFieldParams() {
         // 行分隔模式不依赖长度字段参数，缺省（null）应可正常解析
         NettyProperties props = globals();

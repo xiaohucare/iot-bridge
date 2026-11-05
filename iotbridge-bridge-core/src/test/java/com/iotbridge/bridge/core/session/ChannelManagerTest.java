@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -36,6 +37,8 @@ class ChannelManagerTest {
         when(id.asLongText()).thenReturn(channelId);
         when(channel.remoteAddress()).thenReturn(new InetSocketAddress("127.0.0.1", 0));
         when(channel.isActive()).thenReturn(Boolean.TRUE);
+        // 通道可写（出站缓冲未超水位）才允许写入
+        when(channel.isWritable()).thenReturn(Boolean.TRUE);
         // sendToDevice 会在非 EventLoop 线程等待写完成：桩定 EventLoop 与立即成功的写 future
         EventLoop eventLoop = mock(EventLoop.class);
         when(eventLoop.inEventLoop()).thenReturn(Boolean.FALSE);
@@ -69,6 +72,18 @@ class ChannelManagerTest {
 
         assertFalse(manager.isOnline("sos-c02", "dev002"));
         assertEquals(0, manager.onlineCount());
+    }
+
+    @Test
+    void sendToDeviceWhenNotWritableShouldReturnFalseAndSkipWrite() {
+        ChannelManager manager = new ChannelManager();
+        Channel channel = newChannel("chan-full");
+        // 出站缓冲超过高水位：按未送达处理，交由上层离线暂存，避免内存膨胀
+        when(channel.isWritable()).thenReturn(Boolean.FALSE);
+
+        manager.register("sos-c02", "devFull", channel);
+        assertFalse(manager.sendToDevice("sos-c02", "devFull", "x".getBytes(StandardCharsets.UTF_8)));
+        verify(channel, never()).writeAndFlush(any());
     }
 
     @Test
