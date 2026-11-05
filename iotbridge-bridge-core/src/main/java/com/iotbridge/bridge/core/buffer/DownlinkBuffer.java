@@ -1,6 +1,7 @@
 package com.iotbridge.bridge.core.buffer;
 
 import com.iotbridge.bridge.core.config.DownlinkBufferProperties;
+import com.iotbridge.spi.session.SessionKey;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,9 +40,9 @@ public class DownlinkBuffer {
     private static final int MIN_LIMIT = 1;
 
     /**
-     * deviceId -> 待发指令队列（先进先出，线程安全）。
+     * SessionKey（协议+设备号）-> 待发指令队列（先进先出，线程安全）。
      */
-    private final ConcurrentMap<String, ConcurrentLinkedDeque<PendingFrame>> queues = new ConcurrentHashMap<>();
+    private final ConcurrentMap<SessionKey, ConcurrentLinkedDeque<PendingFrame>> queues = new ConcurrentHashMap<>();
 
     private final DownlinkBufferProperties properties;
 
@@ -79,21 +80,23 @@ public class DownlinkBuffer {
     /**
      * 暂存一条待发下行指令。未启用、参数非法时忽略。
      *
-     * @param deviceId 设备标识
-     * @param frame    待发指令快照
+     * @param protocolType 协议类型（与设备上线时一致的具象协议）
+     * @param deviceId     设备标识
+     * @param frame        待发指令快照
      */
-    public void offer(String deviceId, PendingFrame frame) {
+    public void offer(String protocolType, String deviceId, PendingFrame frame) {
         if (!isEnabled() || deviceId == null || frame == null) {
             return;
         }
+        SessionKey key = SessionKey.of(protocolType, deviceId);
         int perDeviceMax = Math.max(MIN_LIMIT, properties.getMaxPendingPerDevice());
         // 新设备入队前先做全局设备数约束，避免在 compute 持锁内操作同一 map 造成递归更新
-        if (!queues.containsKey(deviceId)) {
+        if (!queues.containsKey(key)) {
             enforceDeviceCapacity();
         }
         // compute 持 bin 锁期间只做纯内存操作，被丢弃的指令带出来在锁外记录，避免日志 IO 放大锁竞争
         final PendingFrame[] droppedHolder = new PendingFrame[1];
-        queues.compute(deviceId, (key, deque) -> {
+        queues.compute(key, (k, deque) -> {
             ConcurrentLinkedDeque<PendingFrame> target = deque == null ? new ConcurrentLinkedDeque<>() : deque;
             while (target.size() >= perDeviceMax) {
                 droppedHolder[0] = target.pollFirst();
@@ -102,25 +105,27 @@ public class DownlinkBuffer {
             return target;
         });
         if (droppedHolder[0] != null) {
-            log.warn("待发队列超限丢弃最旧指令 deviceId={} dropped={}", deviceId, droppedHolder[0]);
+            log.warn("待发队列超限丢弃最旧指令 protocol={} deviceId={} dropped={}", key.getProtocolType(),
+                    deviceId, droppedHolder[0]);
         }
         if (log.isDebugEnabled()) {
-            log.debug("下行已暂存待重投 deviceId={} command={} requestId={}", deviceId,
-                    frame.getCommand(), frame.getRequestId());
+            log.debug("下行已暂存待重投 protocol={} deviceId={} command={} requestId={}", key.getProtocolType(),
+                    deviceId, frame.getCommand(), frame.getRequestId());
         }
     }
 
     /**
-     * 原子取出并清空指定设备的待发指令（丢弃超过 TTL 的指令）。
+     * 原子取出并清空指定协议下某设备的待发指令（丢弃超过 TTL 的指令）。
      *
-     * @param deviceId 设备标识
+     * @param protocolType 协议类型
+     * @param deviceId     设备标识
      * @return 待补发指令列表（按入队顺序），无待发时返回空列表
      */
-    public List<PendingFrame> drain(String deviceId) {
+    public List<PendingFrame> drain(String protocolType, String deviceId) {
         if (deviceId == null) {
             return Collections.emptyList();
         }
-        ConcurrentLinkedDeque<PendingFrame> taken = queues.remove(deviceId);
+        ConcurrentLinkedDeque<PendingFrame> taken = queues.remove(SessionKey.of(protocolType, deviceId));
         if (taken == null || taken.isEmpty()) {
             return Collections.emptyList();
         }
@@ -142,16 +147,17 @@ public class DownlinkBuffer {
     }
 
     /**
-     * 指定设备当前待发指令数（弱一致视图）。
+     * 指定协议下某设备当前待发指令数（弱一致视图）。
      *
-     * @param deviceId 设备标识
+     * @param protocolType 协议类型
+     * @param deviceId     设备标识
      * @return 待发数，不存在返回 0
      */
-    public int pendingSize(String deviceId) {
+    public int pendingSize(String protocolType, String deviceId) {
         if (deviceId == null) {
             return 0;
         }
-        ConcurrentLinkedDeque<PendingFrame> deque = queues.get(deviceId);
+        ConcurrentLinkedDeque<PendingFrame> deque = queues.get(SessionKey.of(protocolType, deviceId));
         return deque == null ? 0 : deque.size();
     }
 
@@ -195,9 +201,9 @@ public class DownlinkBuffer {
         if (queues.size() < deviceCap) {
             return;
         }
-        String victim = null;
+        SessionKey victim = null;
         long oldest = Long.MAX_VALUE;
-        for (Map.Entry<String, ConcurrentLinkedDeque<PendingFrame>> entry : queues.entrySet()) {
+        for (Map.Entry<SessionKey, ConcurrentLinkedDeque<PendingFrame>> entry : queues.entrySet()) {
             PendingFrame head = entry.getValue().peekFirst();
             long headTime = head == null ? Long.MAX_VALUE : head.getEnqueuedAt();
             if (headTime < oldest) {
@@ -207,8 +213,8 @@ public class DownlinkBuffer {
         }
         if (victim != null) {
             ConcurrentLinkedDeque<PendingFrame> removed = queues.remove(victim);
-            log.warn("待发设备数超上限 {}，淘汰最陈旧设备队列 deviceId={} 丢弃指令数={}",
-                    deviceCap, victim, removed == null ? 0 : removed.size());
+            log.warn("待发设备数超上限 {}，淘汰最陈旧设备队列 protocol={} deviceId={} 丢弃指令数={}",
+                    deviceCap, victim.getProtocolType(), victim.getDeviceId(), removed == null ? 0 : removed.size());
         }
     }
 }

@@ -1,6 +1,7 @@
 package com.iotbridge.bridge.core.session;
 
 import com.iotbridge.access.netty.session.ChannelManager;
+import com.iotbridge.spi.session.SessionKey;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelId;
 import org.junit.jupiter.api.Test;
@@ -9,6 +10,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -17,7 +19,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link ChannelManager} 设备会话注册与下线测试。
+ * {@link ChannelManager} 协议+设备会话注册、下线与隔离测试。
  *
  * @author iotbridge
  * @date 2026-11-05
@@ -39,11 +41,11 @@ class ChannelManagerTest {
         ChannelManager manager = new ChannelManager();
         Channel channel = newChannel("chan-1");
 
-        manager.register("dev001", channel);
+        manager.register("sos-c02", "dev001", channel);
 
-        assertTrue(manager.isOnline("dev001"));
+        assertTrue(manager.isOnline("sos-c02", "dev001"));
         assertEquals(1, manager.onlineCount());
-        boolean delivered = manager.sendToDevice("dev001", "hi\n".getBytes(StandardCharsets.UTF_8));
+        boolean delivered = manager.sendToDevice("sos-c02", "dev001", "hi".getBytes(StandardCharsets.UTF_8));
         assertTrue(delivered);
         verify(channel).writeAndFlush(any());
     }
@@ -52,11 +54,11 @@ class ChannelManagerTest {
     void unbindByChannelShouldMarkOffline() {
         ChannelManager manager = new ChannelManager();
         Channel channel = newChannel("chan-2");
-        manager.register("dev002", channel);
+        manager.register("sos-c02", "dev002", channel);
 
         manager.unbindByChannel(channel);
 
-        assertFalse(manager.isOnline("dev002"));
+        assertFalse(manager.isOnline("sos-c02", "dev002"));
         assertEquals(0, manager.onlineCount());
     }
 
@@ -64,7 +66,29 @@ class ChannelManagerTest {
     void sendToDeviceOfflineShouldReturnFalse() {
         ChannelManager manager = new ChannelManager();
 
-        assertFalse(manager.sendToDevice("ghost", "x".getBytes(StandardCharsets.UTF_8)));
+        assertFalse(manager.sendToDevice("sos-c02", "ghost", "x".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void sameDeviceIdAcrossProtocolsAreIsolated() {
+        ChannelManager manager = new ChannelManager();
+        Channel sosChannel = newChannel("chan-sos");
+        Channel demoChannel = newChannel("chan-demo");
+
+        // 不同协议、相同 deviceId 各自独立登记，互不覆盖
+        manager.register("sos-c02", "devX", sosChannel);
+        manager.register("demo-text", "devX", demoChannel);
+
+        assertTrue(manager.isOnline("sos-c02", "devX"));
+        assertTrue(manager.isOnline("demo-text", "devX"));
+        assertEquals(2, manager.onlineCount());
+
+        // 断开 SOS 会话仅影响该协议，demo-text 仍在线
+        manager.unbindByChannel(sosChannel);
+        assertFalse(manager.isOnline("sos-c02", "devX"));
+        assertTrue(manager.isOnline("demo-text", "devX"));
+        // 跨协议聚合：任一协议在线即算在线
+        assertTrue(manager.isDeviceOnline("devX"));
     }
 
     @Test
@@ -74,12 +98,12 @@ class ChannelManagerTest {
         Channel inactive = newChannel("chan-b");
         when(inactive.isActive()).thenReturn(Boolean.FALSE);
 
-        manager.register("devA", active);
-        manager.register("devB", inactive);
+        manager.register("sos-c02", "devA", active);
+        manager.register("demo-text", "devB", inactive);
 
-        Map<String, String> snapshot = manager.snapshotOnlineDevices();
-        assertTrue(snapshot.containsKey("devA"));
-        assertFalse(snapshot.containsKey("devB"));
+        Map<SessionKey, String> snapshot = manager.snapshotOnlineDevices();
+        assertTrue(snapshot.containsKey(SessionKey.of("sos-c02", "devA")));
+        assertFalse(snapshot.containsKey(SessionKey.of("demo-text", "devB")));
         assertEquals(1, snapshot.size());
     }
 
@@ -90,15 +114,11 @@ class ChannelManagerTest {
         Channel inactive = newChannel("chan-d");
         when(inactive.isActive()).thenReturn(Boolean.FALSE);
 
-        manager.register("devC", active);
-        manager.register("devD", inactive);
+        manager.register("sos-c02", "devC", active);
+        manager.register("sos-c02", "devD", inactive);
 
         assertEquals(1, manager.countActive());
         // onlineCount 为登记会话数（含尚未清理的死连接），与 countActive 口径区分
         assertEquals(2, manager.onlineCount());
-    }
-
-    private static void assertEquals(int expected, int actual) {
-        org.junit.jupiter.api.Assertions.assertEquals(expected, actual);
     }
 }

@@ -34,8 +34,8 @@
 - **协议插件化**：实现 `ProtocolCodec` SPI + `META-INF/services` 注册，网关启动自动发现，按 `protocolType` 路由。
 - **全双工转发**：上行 TCP→Kafka，下行 REST→RabbitMQ→TCP，链路解耦、可独立伸缩。
 - **文本/二进制并存**：Netty 帧切分支持行分隔（`DELIMITER`）与长度字段（`LENGTH_FIELD`）两种模式，可通过配置切换。
-- **会话管理**：`ChannelManager` 维护 `deviceId <-> Channel` 双向映射，支持设备上下线清理与按设备寻址下发。
-- **离线暂存重投（可选）**：开启后设备离线期间的下行按 `deviceId` 暂存**原始指令**（有界 + TTL），设备重新上线后按设备串行、重新编码再补发（规避时间戳类指令失效、发送失败退回剩余帧），降低离线丢包。
+- **会话管理**：`ChannelManager` 维护 `(protocolType, deviceId) <-> Channel` 双向映射，会话按「协议 + 设备号」复合键寻址，支持设备上下线清理与按设备寻址下发；不同协议下的相同 `deviceId` 各自独立，互不覆盖。
+- **离线暂存重投（可选）**：开启后设备离线期间的下行按 `(protocolType, deviceId)` 暂存**原始指令**（有界 + TTL），设备重新上线后按会话串行、重新编码再补发（规避时间戳类指令失效、发送失败退回剩余帧），降低离线丢包。
 - **优雅生命周期**：`GatewayLifecycle`（`SmartLifecycle`）随 Spring 容器自动启停 Netty 服务端。
 
 ## 2. 技术栈
@@ -84,9 +84,9 @@ iotbridge (parent, pom)
 | `ProtocolCodec` | spi | 编解码 SPI：`protocolType()` / `decode(byte[])` / `encode(DownlinkCommand)` |
 | `NettyTcpServer` | access-netty | 引导 boss/worker，装配帧解码器 + `DeviceInboundHandler` |
 | `DeviceInboundHandler` | access-netty | 接收整帧 `ByteBuf`，转字节封装 `UplinkFrameEvent` 回调监听器 |
-| `ChannelManager` | access-netty | `deviceId<->Channel` 映射、上下线、`sendToDevice(byte[])` |
+| `ChannelManager` | access-netty | `(protocolType,deviceId)<->Channel` 映射、上下线、`sendToDevice(protocolType,deviceId,byte[])` |
 | `ProtocolCodecRegistry` | bridge-core | ServiceLoader + Spring Bean 合并索引，`resolve()` / `getDefault()` |
-| `UplinkDispatcher` | bridge-core | 实现 `UplinkFrameListener`：默认协议解码 → 绑定会话 → 投递 Kafka |
+| `UplinkDispatcher` | bridge-core | 实现 `UplinkFrameListener`：按端口绑定协议解码 → 以 `(protocol,deviceId)` 绑定会话 → 投递 Kafka |
 | `DownlinkDispatcher` | bridge-core | 实现 `DownlinkDispatchHandler`：按协议编码 → 写入设备通道 |
 | `GatewayLifecycle` | bridge-core | `SmartLifecycle` 随容器启停 Netty |
 | `KafkaUplinkProducer` / `RabbitDownlinkPublisher` | mq | 上行生产 / 下行发布 |
@@ -194,26 +194,32 @@ REST 统一返回 `Result<T>`：`{ "success": bool, "code": string, "message": s
 
 用于排查“设备是否在线”（下行未送达通常因设备离线）：
 
-**GET** `/api/v1/devices/online` — 列出当前在线设备（含远端地址）：
+**GET** `/api/v1/devices/online` — 列出当前在线设备（含协议类型与远端地址）；可选查询参数 `protocol` 按协议聚焦：
 
 ```bash
+# 列出全部协议的在线设备
 curl http://localhost:8080/api/v1/devices/online
+# 仅列出 sos-c02 协议下的在线会话
+curl "http://localhost:8080/api/v1/devices/online?protocol=sos-c02"
 ```
 ```json
 { "success": true, "code": "0", "message": "成功",
-  "data": [ { "deviceId": "869975034441082", "remoteAddress": "/127.0.0.1:52000" } ] }
+  "data": [ { "protocolType": "sos-c02", "deviceId": "869975034441082", "remoteAddress": "/127.0.0.1:52000" } ] }
 ```
 
 **GET** `/api/v1/devices/{deviceId}/online` — 判断单个设备是否在线：
 
 ```bash
+# 跨协议任一在线即算在线
 curl http://localhost:8080/api/v1/devices/869975034441082/online
+# 精确判定某协议下的会话（区分不同协议相同设备号）
+curl "http://localhost:8080/api/v1/devices/869975034441082/online?protocol=sos-c02"
 ```
 ```json
 { "success": true, "code": "0", "message": "成功", "data": true }
 ```
 
-> 在线状态基于当前网关实例内存会话（`ChannelManager`）；设备需成功处理过至少一帧上行才会登记，多实例部署时不共享。
+> 在线状态基于当前网关实例内存会话（`ChannelManager`），以 `(protocolType, deviceId)` 为复合键；设备需成功处理过至少一帧上行才会登记，多实例部署时不共享。
 
 ## 7. 帧切分模式与多协议监听
 
@@ -383,7 +389,7 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 | `iotbridge.netty.initial-bytes-to-strip` | 输出前剥离字节（0=保留整帧） | 0 |
 | `iotbridge.netty.listeners[]` | 多协议监听（每项 `name`/`host`/`port`/`protocol-type`/`frame-mode`/长度字段参，未填继承全局）；为空则合成单监听 | 空（用扁平字段） |
 | `iotbridge.mq.uplink-topic` | 上行 Kafka 主题 | iotbridge.uplink |
-| `iotbridge.mq.downlink-queue` | 下行 RabbitMQ 队列 | iotbridge.downlink |
+| `iotbridge.mq.downlink-queue` | 下行 RabbitMQ 队列（队列声明、消费监听、发布路由均取此值；多实例可各自指定独立队列避免互抢） | iotbridge.downlink |
 | `iotbridge.mq.downlink-exchange` | 下行交换机 | iotbridge.downlink.exchange |
 | `iotbridge.mq.downlink-routing-key` | 下行路由键 | downlink |
 | `iotbridge.downlink.buffer-enabled` | 设备离线时是否暂存待重投 | false |
@@ -424,7 +430,7 @@ mvn test
 | plugin-sos | `Crc16XmodemTest` | 2 | CRC16-XMODEM 标准向量 |
 | plugin-sos | `SosProtocolCodecTest` | 8 | 各命令解码、编码回解析自洽、篡改 CRC 必失败、ServiceLoader 发现 |
 | bridge-core | `ProtocolCodecRegistryTest` | 3 | 插件加载与回退解析 |
-| bridge-core | `ChannelManagerTest` | 3 | 会话注册/覆盖/下线 |
+| bridge-core | `ChannelManagerTest` | 6 | 会话注册/覆盖/下线/协议隔离 |
 
 ## 13. 工程结构
 
@@ -449,6 +455,7 @@ iot-bridge/
 
 - **上行多协议**：上行按接入端口绑定的协议（`iotbridge.netty.listeners[].protocol-type`）解码，同一实例可在不同端口并行跑多种协议（如 9000=sos-c02 LENGTH_FIELD、9001=demo-text DELIMITER）；未绑定端口回退默认协议。单端口内的自动协议识别（根据首帧内容嗅探）尚未实现，不同帧长的二进制协议仍需分端口接入。
 - **下行协议路由**：下行按 `DownlinkCommand.protocolType` 经 `resolve()` 选择插件，为空回退默认。
-- **在线判定即写即发（可选缓冲重投）**：设备离线时默认丢弃并告警；开启 `iotbridge.downlink.buffer-enabled` 后按 `deviceId` 暂存**原始下行指令**（有界 + TTL），设备重新上线（收到上行）时由 `DownlinkReflowService` **按设备串行、以当前指令重新编码后**按序补发（规避 `timeCalib` 等含时间戳指令在离线期间失效）；补发中发送失败则中断并把剩余帧按原序退回缓冲，等待下次上线，杜绝静默丢失。缓冲仅存于当前实例内存，进程重启清空、多实例不共享。
+- **会话隔离**：设备会话（在线注册、下行投递、离线暂存与补发）统一以 `SessionKey`（`protocolType` + `deviceId`）为复合键，不同协议下的相同 `deviceId` 各自独立、互不覆盖；`ChannelManager` 快照按协议、设备号升序输出，运维查在线可跨协议聚合或按 `protocol` 精确判定。
+- **在线判定即写即发（可选缓冲重投）**：设备离线时默认丢弃并告警；开启 `iotbridge.downlink.buffer-enabled` 后按 `(protocolType, deviceId)` 暂存**原始下行指令**（有界 + TTL），设备重新上线（收到上行）时由 `DownlinkReflowService` **按会话串行、以当前指令重新编码后**按序补发（规避 `timeCalib` 等含时间戳指令在离线期间失效）；补发中发送失败则中断并把剩余帧按原序退回缓冲，等待下次上线，杜绝静默丢失。缓冲仅存于当前实例内存，进程重启清空、多实例不共享。
 - **未包含**：设备鉴权、指令幂等与应答确认闭环、设备影子持久化、集群化会话共享、指标监控等——接口位已预留，可迭代增强。
 - **SOS 样例帧**：因协议文档样例中厂商码/CRC 为占位，测试采用“自造合法帧 + 回解析自洽 + 篡改 CRC 必失败”策略；如有含真实值的完整样例帧，可补充逐字节比对用例。

@@ -44,12 +44,17 @@ public final class SosDemoClient {
     /**
      * 客户端入口。
      *
-     * @param args 启动参数，未使用
+     * @param args 启动参数（均可省略）：{@code args[0]}=设备标识(IMEI)、{@code args[1]}=主机、{@code args[2]}=端口；
+     *             用于联调时指定与文本设备相同的设备号以验证跨协议会话隔离
      * @throws InterruptedException 连接或等待被关闭
      */
     public static void main(String[] args) throws InterruptedException {
-        byte[] registerFrame = buildRegisterFrame();
-        byte[] eventFrame = buildEventFrame();
+        String deviceId = args.length >= 1 ? args[0] : IMEI;
+        String host = args.length >= 2 ? args[1] : HOST;
+        int port = args.length >= 3 ? Integer.parseInt(args[2]) : PORT;
+
+        byte[] registerFrame = buildRegisterFrame(deviceId);
+        byte[] eventFrame = buildEventFrame(deviceId);
 
         EventLoopGroup group = new NioEventLoopGroup();
         try {
@@ -65,8 +70,8 @@ public final class SosDemoClient {
                         }
                     });
 
-            Channel channel = bootstrap.connect(HOST, PORT).sync().channel();
-            System.out.println("[sos-device] 已连接网关 " + HOST + ":" + PORT);
+            Channel channel = bootstrap.connect(host, port).sync().channel();
+            System.out.println("[sos-device] 已连接网关 " + host + ":" + port);
 
             channel.writeAndFlush(wrap(registerFrame));
             System.out.println("[sos-device] 已发送注册帧: " + ByteBufUtil.hexDump(registerFrame));
@@ -75,7 +80,7 @@ public final class SosDemoClient {
             channel.writeAndFlush(wrap(eventFrame));
             System.out.println("[sos-device] 已发送事件帧: " + ByteBufUtil.hexDump(eventFrame));
             System.out.println("[sos-device] 等待下行…… (对网关下发: "
-                    + "curl -XPOST http://localhost:8080/api/v1/devices/" + IMEI
+                    + "curl -XPOST http://localhost:8080/api/v1/devices/" + deviceId
                     + "/commands -H 'Content-Type: application/json' "
                     + "-d '{\"protocolType\":\"sos-c02\",\"command\":\"timeCalib\",\"params\":{\"vendor\":\"0001\"}}')");
 
@@ -92,10 +97,10 @@ public final class SosDemoClient {
     /**
      * 构造注册包(0x01)：设备类型 + IMEI + IMSI + ICCID + 电压 + CSQ + 电量 + 程序版本。
      */
-    private static byte[] buildRegisterFrame() {
+    private static byte[] buildRegisterFrame(String deviceId) {
         ByteArrayOutputStream data = new ByteArrayOutputStream();
         data.write(0x04); // 设备类型：手报(紧急按钮)
-        writeAscii(data, IMEI, 15);
+        writeAscii(data, deviceId, 15);
         writeAscii(data, "460113118743732", 15);   // IMSI
         writeAscii(data, "89861120224014398762", 20); // ICCID
         data.write(0x25); // 电池电压 3.7V(0.1V 单位)
@@ -110,10 +115,10 @@ public final class SosDemoClient {
     /**
      * 构造事件上报包(0x02)：设备类型 + IMEI + 事件类型 + 电压 + CSQ + 电量 + 程序版本。
      */
-    private static byte[] buildEventFrame() {
+    private static byte[] buildEventFrame(String deviceId) {
         ByteArrayOutputStream data = new ByteArrayOutputStream();
         data.write(0x04); // 设备类型
-        writeAscii(data, IMEI, 15);
+        writeAscii(data, deviceId, 15);
         data.write(0x02); // 事件类型：报警
         data.write(0x25);
         data.write(0x15);

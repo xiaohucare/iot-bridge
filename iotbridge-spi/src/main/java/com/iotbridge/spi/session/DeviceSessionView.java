@@ -11,6 +11,11 @@ package com.iotbridge.spi.session;
 public final class DeviceSessionView {
 
     /**
+     * 会话所属协议类型（多协议并行下用于区分相同设备号）。
+     */
+    private final String protocolType;
+
+    /**
      * 设备唯一标识。
      */
     private final String deviceId;
@@ -23,12 +28,18 @@ public final class DeviceSessionView {
     /**
      * 构造会话视图。
      *
+     * @param protocolType  协议类型
      * @param deviceId      设备标识
      * @param remoteAddress 远端地址
      */
-    public DeviceSessionView(String deviceId, String remoteAddress) {
+    public DeviceSessionView(String protocolType, String deviceId, String remoteAddress) {
+        this.protocolType = protocolType;
         this.deviceId = deviceId;
         this.remoteAddress = remoteAddress;
+    }
+
+    public String getProtocolType() {
+        return protocolType;
     }
 
     public String getDeviceId() {
@@ -41,6 +52,7 @@ public final class DeviceSessionView {
 
     @Override
     public String toString() {
-        return "DeviceSessionView{deviceId='" + deviceId + "', remoteAddress='" + remoteAddress + "'}";
+        return "DeviceSessionView{protocolType='" + protocolType + "', deviceId='" + deviceId
+                + "', remoteAddress='" + remoteAddress + "'}";
     }
 }

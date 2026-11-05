@@ -5,6 +5,7 @@ import com.iotbridge.bridge.core.buffer.DownlinkBuffer;
 import com.iotbridge.bridge.core.buffer.PendingFrame;
 import com.iotbridge.bridge.core.registry.ProtocolCodecRegistry;
 import com.iotbridge.spi.codec.ProtocolCodec;
+import com.iotbridge.spi.session.SessionKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -34,9 +35,9 @@ public class DownlinkReflowService {
     private final ProtocolCodecRegistry codecRegistry;
 
     /**
-     * deviceId -> 补发串行锁。条目数与「在线或曾有暂存」的设备量同阶，锁对象开销可忽略，不做回收。
+     * 会话键 -> 补发串行锁。条目数与「在线或曾有暂存」的设备量同阶，锁对象开销可忽略，不做回收。
      */
-    private final ConcurrentMap<String, Object> reflowLocks = new ConcurrentHashMap<>();
+    private final ConcurrentMap<SessionKey, Object> reflowLocks = new ConcurrentHashMap<>();
 
     public DownlinkReflowService(DownlinkBuffer downlinkBuffer, ChannelManager channelManager,
                                  ProtocolCodecRegistry codecRegistry) {
@@ -46,22 +47,24 @@ public class DownlinkReflowService {
     }
 
     /**
-     * 排空并补发指定设备暂存的下行指令。缓冲未开启或设备标识为空时直接返回。
+     * 排空并补发指定协议下某设备暂存的下行指令。缓冲未开启或设备标识为空时直接返回。
      *
-     * <p>整体在 per-device 锁内执行，保证同设备补发互斥；异常被捕获隔离，不外泄到上行投递等主链路。</p>
+     * <p>整体在 per-session 锁内执行，保证同会话补发互斥；异常被捕获隔离，不外泄到上行投递等主链路。</p>
      *
-     * @param deviceId 设备标识
+     * @param protocolType 协议类型（与设备上线/入队时一致的具象协议）
+     * @param deviceId     设备标识
      */
-    public void reflow(String deviceId) {
+    public void reflow(String protocolType, String deviceId) {
         if (!downlinkBuffer.isEnabled() || deviceId == null) {
             return;
         }
-        Object lock = reflowLocks.computeIfAbsent(deviceId, key -> new Object());
+        SessionKey key = SessionKey.of(protocolType, deviceId);
+        Object lock = reflowLocks.computeIfAbsent(key, k -> new Object());
         synchronized (lock) {
             try {
-                drainAndSend(deviceId);
+                drainAndSend(protocolType, deviceId);
             } catch (RuntimeException ex) {
-                log.error("下行补发异常 deviceId={}", deviceId, ex);
+                log.error("下行补发异常 protocol={} deviceId={}", protocolType, deviceId, ex);
             }
         }
     }
@@ -69,14 +72,15 @@ public class DownlinkReflowService {
     /**
      * 取出全部暂存指令并按序重新编码发送；发送失败时把剩余帧（含当前帧）退回缓冲，编码失败则跳过该帧。
      *
-     * @param deviceId 设备标识
+     * @param protocolType 协议类型
+     * @param deviceId     设备标识
      */
-    private void drainAndSend(String deviceId) {
-        List<PendingFrame> pending = downlinkBuffer.drain(deviceId);
+    private void drainAndSend(String protocolType, String deviceId) {
+        List<PendingFrame> pending = downlinkBuffer.drain(protocolType, deviceId);
         if (pending.isEmpty()) {
             return;
         }
-        log.info("设备上线补发暂存下行 deviceId={} 数量={}", deviceId, pending.size());
+        log.info("设备上线补发暂存下行 protocol={} deviceId={} 数量={}", protocolType, deviceId, pending.size());
         for (int i = 0; i < pending.size(); i++) {
             PendingFrame frame = pending.get(i);
             byte[] encoded;
@@ -89,10 +93,11 @@ public class DownlinkReflowService {
                         frame.getCommand(), frame.getRequestId(), ex);
                 continue;
             }
-            if (!channelManager.sendToDevice(deviceId, encoded)) {
+            if (!channelManager.sendToDevice(protocolType, deviceId, encoded)) {
                 // 通道中途失效：把尚未发送成功的剩余帧按原序退回缓冲，等待下次上线
-                reEnqueue(deviceId, pending, i);
-                log.warn("补发中断，剩余 {} 帧已退回缓冲 deviceId={}", pending.size() - i, deviceId);
+                reEnqueue(protocolType, deviceId, pending, i);
+                log.warn("补发中断，剩余 {} 帧已退回缓冲 protocol={} deviceId={}", pending.size() - i, protocolType,
+                        deviceId);
                 return;
             }
         }
@@ -101,13 +106,14 @@ public class DownlinkReflowService {
     /**
      * 将 {@code fromIndex}（含）之后的剩余帧按原序退回缓冲。仅退回未成功发送的帧，避免重复下发。
      *
-     * @param deviceId  设备标识
-     * @param pending   本轮排空出的帧列表
-     * @param fromIndex 首个未成功发送帧的下标
+     * @param protocolType 协议类型
+     * @param deviceId     设备标识
+     * @param pending      本轮排空出的帧列表
+     * @param fromIndex    首个未成功发送帧的下标
      */
-    private void reEnqueue(String deviceId, List<PendingFrame> pending, int fromIndex) {
+    private void reEnqueue(String protocolType, String deviceId, List<PendingFrame> pending, int fromIndex) {
         for (int j = fromIndex; j < pending.size(); j++) {
-            downlinkBuffer.offer(deviceId, pending.get(j));
+            downlinkBuffer.offer(protocolType, deviceId, pending.get(j));
         }
     }
 }

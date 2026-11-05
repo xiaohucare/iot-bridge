@@ -31,9 +31,12 @@ public class DownlinkCommandConsumer {
     /**
      * 监听下行队列，处理单条指令。
      *
+     * <p>队列名走 {@code iotbridge.mq.downlink-queue} 配置（与队列声明、下行发布同源），缺省回退
+     * {@link IotbridgeConstants#QUEUE_DOWNLINK}；如此每实例可指定独立队列，多实例共存时不至于互抢同一队列。</p>
+     *
      * @param command 反序列化后的下行指令
      */
-    @RabbitListener(queues = IotbridgeConstants.QUEUE_DOWNLINK)
+    @RabbitListener(queues = "${iotbridge.mq.downlink-queue:" + IotbridgeConstants.QUEUE_DOWNLINK + "}")
     public void onMessage(DownlinkCommand command) {
         if (command == null) {
             log.warn("收到空下行指令，已忽略");

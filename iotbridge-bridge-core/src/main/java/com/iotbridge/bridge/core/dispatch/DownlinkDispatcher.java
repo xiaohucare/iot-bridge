@@ -43,26 +43,30 @@ public class DownlinkDispatcher implements DownlinkDispatchHandler {
     @Override
     public void handle(DownlinkCommand command) {
         ProtocolCodec codec = codecRegistry.resolve(command.getProtocolType());
+        // 会话/缓冲以与设备上线一致的具象协议为键：指令未指定协议时回退默认协议，与上行注册时的具象协议对齐
+        String protocolType = codec.protocolType();
         byte[] frame = codec.encode(command);
-        boolean delivered = channelManager.sendToDevice(command.getDeviceId(), frame);
+        boolean delivered = channelManager.sendToDevice(protocolType, command.getDeviceId(), frame);
         if (delivered) {
             if (log.isDebugEnabled()) {
-                log.debug("下行已送达 deviceId={} command={}", command.getDeviceId(), command.getCommand());
+                log.debug("下行已送达 protocol={} deviceId={} command={}", protocolType, command.getDeviceId(),
+                        command.getCommand());
             }
             return;
         }
         if (!downlinkBuffer.isEnabled()) {
-            log.warn("下行未送达，设备离线 deviceId={} command={} requestId={}", command.getDeviceId(),
-                    command.getCommand(), command.getRequestId());
+            log.warn("下行未送达，设备离线 protocol={} deviceId={} command={} requestId={}", protocolType,
+                    command.getDeviceId(), command.getCommand(), command.getRequestId());
             return;
         }
         // 离线暂存原始指令（补发时再编码，规避 timeCalib 等含时间戳指令失效）
-        downlinkBuffer.offer(command.getDeviceId(), new PendingFrame(command, System.currentTimeMillis()));
-        log.warn("下行未送达，设备离线已暂存待重投 deviceId={} command={} requestId={}",
+        downlinkBuffer.offer(protocolType, command.getDeviceId(),
+                new PendingFrame(command, System.currentTimeMillis()));
+        log.warn("下行未送达，设备离线已暂存待重投 protocol={} deviceId={} command={} requestId={}", protocolType,
                 command.getDeviceId(), command.getCommand(), command.getRequestId());
         // 双检：暂存与“设备刚上线、上一轮补发已排空”交错时，若此刻已在线则立即补发，关闭滞留窗口
-        if (channelManager.isOnline(command.getDeviceId())) {
-            downlinkReflowService.reflow(command.getDeviceId());
+        if (channelManager.isOnline(protocolType, command.getDeviceId())) {
+            downlinkReflowService.reflow(protocolType, command.getDeviceId());
         }
     }
 }

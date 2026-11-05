@@ -44,14 +44,14 @@ public class UplinkDispatcher implements UplinkFrameListener {
     public void onUplinkFrame(UplinkFrameEvent event) {
         ProtocolCodec codec = codecRegistry.resolve(event.getProtocolType());
         UplinkMessage message = codec.decode(event.getFrame());
-        // 绑定设备与通道，供下行按 deviceId 寻址
-        channelManager.register(message.getDeviceId(), event.getChannel());
+        // 绑定协议+设备与通道，供下行按 (protocol,deviceId) 寻址（不同协议相同设备号不互覆）
+        channelManager.register(message.getProtocolType(), message.getDeviceId(), event.getChannel());
         if (log.isDebugEnabled()) {
             log.debug("上行分发 deviceId={} protocol={} payload={}", message.getDeviceId(),
                     message.getProtocolType(), message.getPayload());
         }
         uplinkProducer.send(message);
         // 设备（重新）上线，补发此前因离线暂存的下行指令；置于上行投递之后且内部隔离异常，不影响主链路
-        downlinkReflowService.reflow(message.getDeviceId());
+        downlinkReflowService.reflow(message.getProtocolType(), message.getDeviceId());
     }
 }

@@ -27,6 +27,8 @@ import static org.mockito.Mockito.when;
  */
 class DownlinkReflowServiceTest {
 
+    private static final String PT = "sos-c02";
+
     private DownlinkBuffer enabledBuffer(int max) {
         DownlinkBufferProperties properties = new DownlinkBufferProperties();
         properties.setBufferEnabled(true);
@@ -36,34 +38,34 @@ class DownlinkReflowServiceTest {
     }
 
     private PendingFrame frame(String deviceId, String command) {
-        return new PendingFrame(new DownlinkCommand(deviceId, "sos-c02", command, null, "req-" + command),
+        return new PendingFrame(new DownlinkCommand(deviceId, PT, command, null, "req-" + command),
                 System.currentTimeMillis());
     }
 
     @Test
     void reflowSendsAllFramesInOrderWhenChannelActive() {
         DownlinkBuffer buffer = enabledBuffer(10);
-        buffer.offer("d", frame("d", "a"));
-        buffer.offer("d", frame("d", "b"));
+        buffer.offer(PT, "d", frame("d", "a"));
+        buffer.offer(PT, "d", frame("d", "b"));
 
         ProtocolCodec codec = mock(ProtocolCodec.class);
         when(codec.encode(any())).thenReturn(new byte[]{1});
         ProtocolCodecRegistry registry = mock(ProtocolCodecRegistry.class);
         when(registry.resolve(any())).thenReturn(codec);
         ChannelManager channelManager = mock(ChannelManager.class);
-        when(channelManager.sendToDevice(anyString(), any())).thenReturn(Boolean.TRUE);
+        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(Boolean.TRUE);
 
-        new DownlinkReflowService(buffer, channelManager, registry).reflow("d");
+        new DownlinkReflowService(buffer, channelManager, registry).reflow(PT, "d");
 
-        verify(channelManager, times(2)).sendToDevice(eq("d"), any());
-        assertEquals(0, buffer.pendingSize("d"));
+        verify(channelManager, times(2)).sendToDevice(eq(PT), eq("d"), any());
+        assertEquals(0, buffer.pendingSize(PT, "d"));
     }
 
     @Test
     void reflowReturnsRemainingFramesOnSendFailure() {
         DownlinkBuffer buffer = enabledBuffer(10);
-        buffer.offer("d", frame("d", "a"));
-        buffer.offer("d", frame("d", "b"));
+        buffer.offer(PT, "d", frame("d", "a"));
+        buffer.offer(PT, "d", frame("d", "b"));
 
         ProtocolCodec codec = mock(ProtocolCodec.class);
         when(codec.encode(any())).thenReturn(new byte[]{1});
@@ -71,19 +73,19 @@ class DownlinkReflowServiceTest {
         when(registry.resolve(any())).thenReturn(codec);
         ChannelManager channelManager = mock(ChannelManager.class);
         // 第一帧成功，第二帧失败 -> 仅剩余未发送的第二帧退回缓冲
-        when(channelManager.sendToDevice(anyString(), any())).thenReturn(Boolean.TRUE, Boolean.FALSE);
+        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(Boolean.TRUE, Boolean.FALSE);
 
-        new DownlinkReflowService(buffer, channelManager, registry).reflow("d");
+        new DownlinkReflowService(buffer, channelManager, registry).reflow(PT, "d");
 
-        verify(channelManager, times(2)).sendToDevice(eq("d"), any());
-        assertEquals(1, buffer.pendingSize("d"));
+        verify(channelManager, times(2)).sendToDevice(eq(PT), eq("d"), any());
+        assertEquals(1, buffer.pendingSize(PT, "d"));
     }
 
     @Test
     void reflowSkipsFrameOnEncodeFailureAndEmptiesBuffer() {
         DownlinkBuffer buffer = enabledBuffer(10);
-        buffer.offer("d", frame("d", "a"));
-        buffer.offer("d", frame("d", "b"));
+        buffer.offer(PT, "d", frame("d", "a"));
+        buffer.offer(PT, "d", frame("d", "b"));
 
         ProtocolCodec codec = mock(ProtocolCodec.class);
         // 编码确定性失败：跳过该帧，不重排、不发送
@@ -92,10 +94,10 @@ class DownlinkReflowServiceTest {
         when(registry.resolve(any())).thenReturn(codec);
         ChannelManager channelManager = mock(ChannelManager.class);
 
-        new DownlinkReflowService(buffer, channelManager, registry).reflow("d");
+        new DownlinkReflowService(buffer, channelManager, registry).reflow(PT, "d");
 
-        verify(channelManager, never()).sendToDevice(anyString(), any());
-        assertEquals(0, buffer.pendingSize("d"));
+        verify(channelManager, never()).sendToDevice(anyString(), anyString(), any());
+        assertEquals(0, buffer.pendingSize(PT, "d"));
     }
 
     @Test
@@ -106,9 +108,9 @@ class DownlinkReflowServiceTest {
         ChannelManager channelManager = mock(ChannelManager.class);
         ProtocolCodecRegistry registry = mock(ProtocolCodecRegistry.class);
 
-        new DownlinkReflowService(buffer, channelManager, registry).reflow("d");
+        new DownlinkReflowService(buffer, channelManager, registry).reflow(PT, "d");
 
-        verify(channelManager, never()).sendToDevice(anyString(), any());
+        verify(channelManager, never()).sendToDevice(anyString(), anyString(), any());
     }
 
     @Test
@@ -117,8 +119,8 @@ class DownlinkReflowServiceTest {
         ChannelManager channelManager = mock(ChannelManager.class);
         ProtocolCodecRegistry registry = mock(ProtocolCodecRegistry.class);
 
-        new DownlinkReflowService(buffer, channelManager, registry).reflow(null);
+        new DownlinkReflowService(buffer, channelManager, registry).reflow(PT, null);
 
-        verify(channelManager, never()).sendToDevice(anyString(), any());
+        verify(channelManager, never()).sendToDevice(anyString(), anyString(), any());
     }
 }

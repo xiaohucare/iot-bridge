@@ -6,6 +6,7 @@ import com.iotbridge.spi.session.DeviceSessionView;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -32,21 +33,28 @@ public class DeviceQueryController {
     /**
      * 查询当前所有在线设备。
      *
+     * @param protocol 协议类型（可选查询参数）；传入则仅列出该协议下的在线会话，省略则列出全部协议
      * @return 在线设备会话列表（无在线设备时为空列表）
      */
     @GetMapping("/online")
-    public Result<List<DeviceSessionView>> listOnline() {
-        return Result.ok(deviceSessionQuery.onlineDevices());
+    public Result<List<DeviceSessionView>> listOnline(
+            @RequestParam(name = "protocol", required = false) String protocol) {
+        return Result.ok(deviceSessionQuery.onlineDevices(protocol));
     }
 
     /**
      * 查询指定设备是否在线。
      *
      * @param deviceId 设备标识（路径变量）
+     * @param protocol 协议类型（可选查询参数）；传入则按协议精确判定，省略则跨协议任一在线即算在线
      * @return 在线返回 {@code true}
      */
     @GetMapping("/{deviceId}/online")
-    public Result<Boolean> isOnline(@PathVariable String deviceId) {
-        return Result.ok(deviceSessionQuery.isOnline(deviceId));
+    public Result<Boolean> isOnline(@PathVariable String deviceId,
+                                    @RequestParam(name = "protocol", required = false) String protocol) {
+        boolean online = (protocol == null || protocol.isEmpty())
+                ? deviceSessionQuery.isOnline(deviceId)
+                : deviceSessionQuery.isOnline(protocol, deviceId);
+        return Result.ok(online);
     }
 }

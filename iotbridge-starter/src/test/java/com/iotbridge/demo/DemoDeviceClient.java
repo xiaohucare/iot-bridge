@@ -30,7 +30,7 @@ public final class DemoDeviceClient {
     private static final String HOST = "127.0.0.1";
     // demo-text 文本协议监听端口（多协议默认下 9000 为 SOS，文本设备走 9001）
     private static final int PORT = 9001;
-    private static final String UPLINK_SAMPLE = "dev001,temperature=26.5,humidity=60";
+    private static final String DEVICE_ID = "dev001";
 
     private DemoDeviceClient() {
         // 工具类不允许实例化
@@ -39,10 +39,16 @@ public final class DemoDeviceClient {
     /**
      * 客户端入口。
      *
-     * @param args 启动参数，未使用
+     * @param args 启动参数（均可省略）：{@code args[0]}=设备标识、{@code args[1]}=主机、{@code args[2]}=端口；
+     *             用于联调时指定与 SOS 设备相同的设备号以验证跨协议会话隔离
      * @throws InterruptedException 连接或等待被关闭
      */
     public static void main(String[] args) throws InterruptedException {
+        String deviceId = args.length >= 1 ? args[0] : DEVICE_ID;
+        String host = args.length >= 2 ? args[1] : HOST;
+        int port = args.length >= 3 ? Integer.parseInt(args[2]) : PORT;
+        String uplinkSample = deviceId + ",temperature=26.5,humidity=60";
+
         EventLoopGroup group = new NioEventLoopGroup();
         try {
             Bootstrap bootstrap = new Bootstrap();
@@ -59,12 +65,12 @@ public final class DemoDeviceClient {
                         }
                     });
 
-            Channel channel = bootstrap.connect(HOST, PORT).sync().channel();
-            System.out.println("[demo-device] 已连接网关 " + HOST + ":" + PORT);
+            Channel channel = bootstrap.connect(host, port).sync().channel();
+            System.out.println("[demo-device] 已连接网关 " + host + ":" + port);
 
             // 发送一行上行报文（末尾 \n 与网关行分隔一致）
-            channel.writeAndFlush(UPLINK_SAMPLE + "\n");
-            System.out.println("[demo-device] 已发送上行: " + UPLINK_SAMPLE);
+            channel.writeAndFlush(uplinkSample + "\n");
+            System.out.println("[demo-device] 已发送上行: " + uplinkSample);
             System.out.println("[demo-device] 等待下行指令……（对网关发起 curl 下发即可看到回写）");
 
             // 保持连接直到通道关闭

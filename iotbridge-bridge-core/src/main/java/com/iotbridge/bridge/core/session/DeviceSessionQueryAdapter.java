@@ -3,6 +3,7 @@ package com.iotbridge.bridge.core.session;
 import com.iotbridge.access.netty.session.ChannelManager;
 import com.iotbridge.spi.session.DeviceSessionQuery;
 import com.iotbridge.spi.session.DeviceSessionView;
+import com.iotbridge.spi.session.SessionKey;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -29,7 +30,13 @@ public class DeviceSessionQueryAdapter implements DeviceSessionQuery {
 
     @Override
     public boolean isOnline(String deviceId) {
-        return channelManager.isOnline(deviceId);
+        // 运维便捷查询：不区分协议，任一协议下在线即视为在线
+        return channelManager.isDeviceOnline(deviceId);
+    }
+
+    @Override
+    public boolean isOnline(String protocolType, String deviceId) {
+        return channelManager.isOnline(protocolType, deviceId);
     }
 
     @Override
@@ -40,10 +47,30 @@ public class DeviceSessionQueryAdapter implements DeviceSessionQuery {
 
     @Override
     public List<DeviceSessionView> onlineDevices() {
-        Map<String, String> snapshot = channelManager.snapshotOnlineDevices();
+        return toViews(channelManager.snapshotOnlineDevices(), null);
+    }
+
+    @Override
+    public List<DeviceSessionView> onlineDevices(String protocolType) {
+        return toViews(channelManager.snapshotOnlineDevices(), protocolType);
+    }
+
+    /**
+     * 将在线快照转为视图列表，可选按协议类型过滤。
+     *
+     * @param snapshot     {@code SessionKey -> 远端地址} 的在线快照（已按协议、设备号升序）
+     * @param protocolType 协议类型；为 {@code null} 或空串时不过滤
+     * @return 命中的会话视图列表
+     */
+    private List<DeviceSessionView> toViews(Map<SessionKey, String> snapshot, String protocolType) {
+        boolean filterByProtocol = protocolType != null && !protocolType.isEmpty();
         List<DeviceSessionView> views = new ArrayList<>(snapshot.size());
-        for (Map.Entry<String, String> entry : snapshot.entrySet()) {
-            views.add(new DeviceSessionView(entry.getKey(), entry.getValue()));
+        for (Map.Entry<SessionKey, String> entry : snapshot.entrySet()) {
+            SessionKey key = entry.getKey();
+            if (filterByProtocol && !protocolType.equals(key.getProtocolType())) {
+                continue;
+            }
+            views.add(new DeviceSessionView(key.getProtocolType(), key.getDeviceId(), entry.getValue()));
         }
         return views;
     }
