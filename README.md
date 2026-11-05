@@ -113,11 +113,11 @@ iotbridge (parent, pom)
    ```
    dev001,temperature=26.5,humidity=60
    ```
-4. 平台下发指令：
+4. 平台下发指令（`protocolType` 须与设备上线绑定的协议一致，否则会被路由到默认协议 `sos-c02` 而编解码失败）：
    ```bash
    curl -XPOST http://localhost:8080/api/v1/devices/dev001/commands \
         -H 'Content-Type: application/json' \
-        -d '{"command":"setInterval","params":{"value":30}}'
+        -d '{"protocolType":"demo-text","command":"setInterval","params":{"value":30}}'
    ```
    模拟设备端将打印收到的下行报文：`dev001:setInterval:value=30`
 

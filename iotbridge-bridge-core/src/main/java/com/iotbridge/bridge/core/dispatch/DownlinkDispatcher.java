@@ -42,10 +42,21 @@ public class DownlinkDispatcher implements DownlinkDispatchHandler {
 
     @Override
     public void handle(DownlinkCommand command) {
-        ProtocolCodec codec = codecRegistry.resolve(command.getProtocolType());
-        // 会话/缓冲以与设备上线一致的具象协议为键：指令未指定协议时回退默认协议，与上行注册时的具象协议对齐
-        String protocolType = codec.protocolType();
-        byte[] frame = codec.encode(command);
+        ProtocolCodec codec;
+        String protocolType;
+        byte[] frame;
+        try {
+            codec = codecRegistry.resolve(command.getProtocolType());
+            // 会话/缓冲以与设备上线一致的具象协议为键：指令未指定协议时回退默认协议，与上行注册时的具象协议对齐
+            protocolType = codec.protocolType();
+            frame = codec.encode(command);
+        } catch (RuntimeException ex) {
+            // 协议解析/编码失败多为确定性错误（非法协议、无法识别指令），重投无益且会引发毒消息循环；
+            // 记录后丢弃，绝不外抛，以免回传消费者导致消费确认失败与无限重投（与本类既有约定一致）
+            log.error("下行指令处理失败，已丢弃 deviceId={} command={} requestId={} protocolType={}",
+                    command.getDeviceId(), command.getCommand(), command.getRequestId(), command.getProtocolType(), ex);
+            return;
+        }
         boolean delivered = channelManager.sendToDevice(protocolType, command.getDeviceId(), frame);
         if (delivered) {
             if (log.isDebugEnabled()) {

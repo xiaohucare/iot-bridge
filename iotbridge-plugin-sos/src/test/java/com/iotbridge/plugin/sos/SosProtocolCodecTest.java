@@ -134,6 +134,18 @@ class SosProtocolCodecTest {
     }
 
     @Test
+    void encodeUnknownCommandNameShouldThrowBridgeExceptionNotHexError() {
+        // 把 demo-text 风格指令名误投到本协议：应给出可读的业务异常，而非“非法十六进制长度”这类晦涩报错
+        Map<String, Object> params = new HashMap<>();
+        params.put("vendor", "0001");
+        DownlinkCommand command = new DownlinkCommand(IMEI, SosProtocolConstants.PROTOCOL_TYPE,
+                "setInterval", params, "req-bad");
+
+        BridgeException ex = assertThrows(BridgeException.class, () -> codec.encode(command));
+        assertTrue(ex.getMessage().contains("无法识别的下行命令"), ex.getMessage());
+    }
+
+    @Test
     void decodeShouldFailOnCorruptedCrc() {
         ByteArrayOutputStream data = new ByteArrayOutputStream();
         ascii(data, IMEI, 15);

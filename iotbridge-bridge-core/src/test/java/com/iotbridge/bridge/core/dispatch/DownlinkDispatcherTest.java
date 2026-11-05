@@ -5,10 +5,13 @@ import com.iotbridge.bridge.core.buffer.DownlinkBuffer;
 import com.iotbridge.bridge.core.config.DownlinkBufferProperties;
 import com.iotbridge.bridge.core.reflow.DownlinkReflowService;
 import com.iotbridge.bridge.core.registry.ProtocolCodecRegistry;
+import com.iotbridge.common.exception.BridgeException;
+import com.iotbridge.common.exception.ErrorCodeEnum;
 import com.iotbridge.spi.codec.ProtocolCodec;
 import com.iotbridge.spi.model.DownlinkCommand;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -106,6 +109,23 @@ class DownlinkDispatcherTest {
         dispatcher(registry, channelManager, buffer)
                 .handle(new DownlinkCommand("dev1", PT, "timeCalib", null, "req1"));
 
+        assertEquals(0, buffer.pendingSize(PT, "dev1"));
+    }
+
+    @Test
+    void encodeFailureIsSwallowedNotPropagated() {
+        ProtocolCodec codec = mock(ProtocolCodec.class);
+        when(codec.protocolType()).thenReturn(PT);
+        // 模拟确定性编码失败（如指令名非法）
+        when(codec.encode(any())).thenThrow(new BridgeException(ErrorCodeEnum.ENCODE_ERROR, "无法识别的下行命令: setInterval"));
+        ChannelManager channelManager = mock(ChannelManager.class);
+        DownlinkBuffer buffer = buffer(true);
+
+        // handle 应内部吞掉编码异常并丢弃，绝不外抛给 MQ 消费者（否则引发毒消息无限重投）
+        assertDoesNotThrow(() -> dispatcher(registryReturning(codec), channelManager, buffer)
+                .handle(new DownlinkCommand("dev1", PT, "setInterval", null, "req1")));
+
+        // 编码先于发送失败，不应产生任何暂存
         assertEquals(0, buffer.pendingSize(PT, "dev1"));
     }
 }

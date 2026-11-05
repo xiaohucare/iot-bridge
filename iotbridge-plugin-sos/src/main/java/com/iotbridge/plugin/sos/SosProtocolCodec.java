@@ -232,7 +232,14 @@ public class SosProtocolCodec implements ProtocolCodec {
             case "command":
                 return SosProtocolConstants.CMD_DOWN;
             default:
-                byte[] hex = HexUtil.fromHex(name.replace("0x", "").replace("0X", ""));
+                byte[] hex;
+                try {
+                    hex = HexUtil.fromHex(name.trim().replace("0x", "").replace("0X", ""));
+                } catch (IllegalArgumentException ex) {
+                    // 非合法十六进制串（如把 demo-text 等其它协议的指令名误投到本协议）：
+                    // 转成明确的业务异常，避免向消费者外泄底层“非法十六进制长度”这类晦涩报错
+                    throw new BridgeException(ErrorCodeEnum.ENCODE_ERROR, "无法识别的下行命令: " + name, ex);
+                }
                 if (hex.length == 1) {
                     return hex[0];
                 }
