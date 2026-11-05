@@ -25,16 +25,22 @@ spring:
 # 网关自定义配置
 iotbridge:
   protocol:
-    # 默认协议类型，需与某个 ProtocolCodec 插件一致
-    default: demo-text
+    # 默认协议类型：默认使用 SOS-C02 V3.0 二进制协议（无需再显式激活 sos profile）
+    default: sos-c02
   netty:
     host: 0.0.0.0
     port: 9000
     boss-threads: 1
     worker-threads: 0
-    max-frame-length: 65536
-    # 帧切分模式：DELIMITER 行分隔(文本协议) / LENGTH_FIELD 长度字段(二进制协议，见 application-sos.yml)
-    frame-mode: DELIMITER
+    # 二进制帧按长度字段切分：SOS 整帧上限较小，限 1024 防异常大包
+    max-frame-length: 1024
+    # 帧切分模式：DELIMITER 行分隔(文本协议) / LENGTH_FIELD 长度字段(二进制协议)
+    frame-mode: LENGTH_FIELD
+    # 帧头3+版本1+厂商2+序列2+命令1 = 偏移9，长度2，数据体后还有 CRC(2)+帧尾(3)=5 字节计入整帧
+    length-field-offset: 9
+    length-field-length: 2
+    length-adjustment: 5
+    initial-bytes-to-strip: 0
   mq:
     uplink-topic: iotbridge.uplink
     downlink-queue: iotbridge.downlink
