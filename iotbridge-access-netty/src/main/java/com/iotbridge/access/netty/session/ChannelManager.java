@@ -7,6 +7,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.Collections;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -102,11 +105,42 @@ public class ChannelManager {
     }
 
     /**
-     * 当前在线设备数量。
+     * 当前登记的设备会话数量（含 {@code isActive()} 为假、尚未清理的死连接）。
      *
-     * @return 在线数量
+     * @return 登记数量
      */
     public int onlineCount() {
         return deviceChannels.size();
+    }
+
+    /**
+     * 当前真正在线（通道 {@code isActive()} 为真）的设备数量。遍历计数，不构造快照。
+     *
+     * @return 在线数量
+     */
+    public int countActive() {
+        int count = 0;
+        for (Channel channel : deviceChannels.values()) {
+            if (channel != null && channel.isActive()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 快照当前在线设备（通道 {@code isActive} 为真）。
+     *
+     * @return {@code deviceId -> 远端地址} 的有序（deviceId 升序）不可变映射副本，无在线设备时为空
+     */
+    public Map<String, String> snapshotOnlineDevices() {
+        Map<String, String> snapshot = new TreeMap<>();
+        for (Map.Entry<String, Channel> entry : deviceChannels.entrySet()) {
+            Channel channel = entry.getValue();
+            if (channel != null && channel.isActive()) {
+                snapshot.put(entry.getKey(), String.valueOf(channel.remoteAddress()));
+            }
+        }
+        return Collections.unmodifiableMap(snapshot);
     }
 }

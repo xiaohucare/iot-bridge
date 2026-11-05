@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -64,6 +65,37 @@ class ChannelManagerTest {
         ChannelManager manager = new ChannelManager();
 
         assertFalse(manager.sendToDevice("ghost", "x".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void snapshotOnlineDevicesShouldExcludeInactive() {
+        ChannelManager manager = new ChannelManager();
+        Channel active = newChannel("chan-a");
+        Channel inactive = newChannel("chan-b");
+        when(inactive.isActive()).thenReturn(Boolean.FALSE);
+
+        manager.register("devA", active);
+        manager.register("devB", inactive);
+
+        Map<String, String> snapshot = manager.snapshotOnlineDevices();
+        assertTrue(snapshot.containsKey("devA"));
+        assertFalse(snapshot.containsKey("devB"));
+        assertEquals(1, snapshot.size());
+    }
+
+    @Test
+    void countActiveShouldExcludeInactiveButOnlineCountKeepsAll() {
+        ChannelManager manager = new ChannelManager();
+        Channel active = newChannel("chan-c");
+        Channel inactive = newChannel("chan-d");
+        when(inactive.isActive()).thenReturn(Boolean.FALSE);
+
+        manager.register("devC", active);
+        manager.register("devD", inactive);
+
+        assertEquals(1, manager.countActive());
+        // onlineCount 为登记会话数（含尚未清理的死连接），与 countActive 口径区分
+        assertEquals(2, manager.onlineCount());
     }
 
     private static void assertEquals(int expected, int actual) {

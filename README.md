@@ -14,7 +14,7 @@
 - [3. 架构与数据流](#3-架构与数据流)
 - [4. 快速开始](#4-快速开始)
 - [5. 消息契约](#5-消息契约)
-- [6. 下行 REST API](#6-下行-rest-api)
+- [6. REST API](#6-rest-api)
 - [7. 帧切分模式](#7-帧切分模式)
 - [8. 示例协议 demo-text](#8-示例协议-demo-text)
 - [9. SOS-C02 V3.0 消防设备协议](#9-sos-c02-v30-消防设备协议)
@@ -24,12 +24,18 @@
 - [13. 工程结构](#13-工程结构)
 - [14. 设计说明与限制](#14-设计说明与限制)
 
+## 相关文档
+
+- [SOS-C02 V3.0 协议规范](docs/protocol-sos-c02.md)：帧结构、CRC、命令集、数据体字节级布局、上下行编解码细则。
+- [部署与运维手册](docs/deployment.md)：环境、构建、配置、启动、接口调用、故障排查。
+
 ## 1. 特性
 
 - **协议插件化**：实现 `ProtocolCodec` SPI + `META-INF/services` 注册，网关启动自动发现，按 `protocolType` 路由。
 - **全双工转发**：上行 TCP→Kafka，下行 REST→RabbitMQ→TCP，链路解耦、可独立伸缩。
 - **文本/二进制并存**：Netty 帧切分支持行分隔（`DELIMITER`）与长度字段（`LENGTH_FIELD`）两种模式，可通过配置切换。
 - **会话管理**：`ChannelManager` 维护 `deviceId <-> Channel` 双向映射，支持设备上下线清理与按设备寻址下发。
+- **离线暂存重投（可选）**：开启后设备离线期间的下行按 `deviceId` 暂存**原始指令**（有界 + TTL），设备重新上线后按设备串行、重新编码再补发（规避时间戳类指令失效、发送失败退回剩余帧），降低离线丢包。
 - **优雅生命周期**：`GatewayLifecycle`（`SmartLifecycle`）随 Spring 容器自动启停 Netty 服务端。
 
 ## 2. 技术栈
@@ -164,7 +170,9 @@ REST 统一返回 `Result<T>`：`{ "success": bool, "code": string, "message": s
 | `B0102` | 协议编码失败（ENCODE_ERROR） |
 | `B0200` | 设备离线（DEVICE_OFFLINE） |
 
-## 6. 下行 REST API
+## 6. REST API
+
+### 6.1 下发指令
 
 **POST** `/api/v1/devices/{deviceId}/commands`
 
@@ -181,6 +189,31 @@ REST 统一返回 `Result<T>`：`{ "success": bool, "code": string, "message": s
 ```json
 { "success": true, "code": "0", "message": "成功", "data": "0b1c2d3e-...." }
 ```
+
+### 6.2 在线设备查询
+
+用于排查“设备是否在线”（下行未送达通常因设备离线）：
+
+**GET** `/api/v1/devices/online` — 列出当前在线设备（含远端地址）：
+
+```bash
+curl http://localhost:8080/api/v1/devices/online
+```
+```json
+{ "success": true, "code": "0", "message": "成功",
+  "data": [ { "deviceId": "869975034441082", "remoteAddress": "/127.0.0.1:52000" } ] }
+```
+
+**GET** `/api/v1/devices/{deviceId}/online` — 判断单个设备是否在线：
+
+```bash
+curl http://localhost:8080/api/v1/devices/869975034441082/online
+```
+```json
+{ "success": true, "code": "0", "message": "成功", "data": true }
+```
+
+> 在线状态基于当前网关实例内存会话（`ChannelManager`）；设备需成功处理过至少一帧上行才会登记，多实例部署时不共享。
 
 ## 7. 帧切分模式
 
@@ -203,6 +236,8 @@ REST 统一返回 `Result<T>`：`{ "success": bool, "code": string, "message": s
 ## 9. SOS-C02 V3.0 消防设备协议
 
 `SosProtocolCodec`（`iotbridge-plugin-sos`，协议标识 `sos-c02`）实现《SOS-C02 SOS-C03B SOS-W03-A SOS-C03-AO 通信协议 V3.0》，适用于燃气/烟感/温感等智能无线终端，基于 TCP，适用 GPRS/4G/WIFI。
+
+> 字节级完整规范（各命令数据体布局、设备/事件类型全表、帧构造示例）见 [docs/protocol-sos-c02.md](docs/protocol-sos-c02.md)。
 
 ### 9.1 帧结构（大端）
 
@@ -322,6 +357,10 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 | `iotbridge.mq.downlink-queue` | 下行 RabbitMQ 队列 | iotbridge.downlink |
 | `iotbridge.mq.downlink-exchange` | 下行交换机 | iotbridge.downlink.exchange |
 | `iotbridge.mq.downlink-routing-key` | 下行路由键 | downlink |
+| `iotbridge.downlink.buffer-enabled` | 设备离线时是否暂存待重投 | false |
+| `iotbridge.downlink.max-pending-per-device` | 单设备最大暂存指令数（超限丢最旧） | 100 |
+| `iotbridge.downlink.max-pending-devices` | 同时暂存的最大设备数（超限淘汰最陈旧设备队列） | 10000 |
+| `iotbridge.downlink.pending-ttl-ms` | 暂存指令存活毫秒（`<=0` 不过期） | 300000 |
 | `spring.kafka.bootstrap-servers` | Kafka 地址 | localhost:9092 |
 | `spring.rabbitmq.host` / `port` / `username` / `password` | RabbitMQ 连接 | localhost:5672 / guest / guest |
 
@@ -381,6 +420,6 @@ iot-bridge/
 
 - **上行单协议**：上行解码固定使用默认协议；同实例多协议混跑需按协议分端口，或在网关前做协议识别（当前未实现）。
 - **下行协议路由**：下行按 `DownlinkCommand.protocolType` 经 `resolve()` 选择插件，为空回退默认。
-- **在线判定即写即发**：`sendToDevice` 在设备离线时丢弃并告警，未做离线缓存/重投；生产可引入 per-device 队列或重试表。
+- **在线判定即写即发（可选缓冲重投）**：设备离线时默认丢弃并告警；开启 `iotbridge.downlink.buffer-enabled` 后按 `deviceId` 暂存**原始下行指令**（有界 + TTL），设备重新上线（收到上行）时由 `DownlinkReflowService` **按设备串行、以当前指令重新编码后**按序补发（规避 `timeCalib` 等含时间戳指令在离线期间失效）；补发中发送失败则中断并把剩余帧按原序退回缓冲，等待下次上线，杜绝静默丢失。缓冲仅存于当前实例内存，进程重启清空、多实例不共享。
 - **未包含**：设备鉴权、指令幂等与应答确认闭环、设备影子持久化、集群化会话共享、指标监控等——接口位已预留，可迭代增强。
 - **SOS 样例帧**：因协议文档样例中厂商码/CRC 为占位，测试采用“自造合法帧 + 回解析自洽 + 篡改 CRC 必失败”策略；如有含真实值的完整样例帧，可补充逐字节比对用例。

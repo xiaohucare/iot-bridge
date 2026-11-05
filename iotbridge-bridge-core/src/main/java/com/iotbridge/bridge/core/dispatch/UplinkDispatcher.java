@@ -4,6 +4,7 @@ import com.iotbridge.access.netty.api.UplinkFrameEvent;
 import com.iotbridge.access.netty.api.UplinkFrameListener;
 import com.iotbridge.access.netty.session.ChannelManager;
 import com.iotbridge.bridge.core.registry.ProtocolCodecRegistry;
+import com.iotbridge.bridge.core.reflow.DownlinkReflowService;
 import com.iotbridge.mq.api.UplinkProducer;
 import com.iotbridge.spi.codec.ProtocolCodec;
 import com.iotbridge.spi.model.UplinkMessage;
@@ -28,12 +29,14 @@ public class UplinkDispatcher implements UplinkFrameListener {
     private final ProtocolCodecRegistry codecRegistry;
     private final ChannelManager channelManager;
     private final UplinkProducer uplinkProducer;
+    private final DownlinkReflowService downlinkReflowService;
 
     public UplinkDispatcher(ProtocolCodecRegistry codecRegistry, ChannelManager channelManager,
-                            UplinkProducer uplinkProducer) {
+                            UplinkProducer uplinkProducer, DownlinkReflowService downlinkReflowService) {
         this.codecRegistry = codecRegistry;
         this.channelManager = channelManager;
         this.uplinkProducer = uplinkProducer;
+        this.downlinkReflowService = downlinkReflowService;
     }
 
     @Override
@@ -47,5 +50,7 @@ public class UplinkDispatcher implements UplinkFrameListener {
                     message.getProtocolType(), message.getPayload());
         }
         uplinkProducer.send(message);
+        // 设备（重新）上线，补发此前因离线暂存的下行指令；置于上行投递之后且内部隔离异常，不影响主链路
+        downlinkReflowService.reflow(message.getDeviceId());
     }
 }

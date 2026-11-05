@@ -50,6 +50,12 @@ public class DeviceInboundHandler extends SimpleChannelInboundHandler<ByteBuf> {
     }
 
     @Override
+    public void channelActive(ChannelHandlerContext ctx) {
+        // 设备建立 TCP 连接（尚未解码上行帧、未绑定 deviceId），与 deviceId 级“设备上线”区分
+        log.info("设备连上服务 remote={}", ctx.channel().remoteAddress());
+    }
+
+    @Override
     public void channelInactive(ChannelHandlerContext ctx) {
         channelManager.unbindByChannel(ctx.channel());
         log.info("设备连接断开 remote={}", ctx.channel().remoteAddress());
