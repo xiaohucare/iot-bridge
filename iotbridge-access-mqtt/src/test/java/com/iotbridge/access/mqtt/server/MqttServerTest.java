@@ -146,6 +146,53 @@ class MqttServerTest {
         assertThrows(IllegalStateException.class, server::start);
     }
 
+    @Test
+    void silentConnectionIsClosedByConnectTimeout() throws Exception {
+        MqttProperties properties = properties();
+        properties.setConnectTimeoutSeconds(1);
+
+        server = new MqttServer(properties, new ChannelManager(), event -> { });
+        server.start();
+
+        BlockingQueue<Incoming> incoming = new LinkedBlockingQueue<>();
+        Channel client = connect(server.getBoundPort(), incoming);
+        // 只建 TCP 不发 CONNECT：应由服务端握手超时主动断开，防止连接被无限占用
+        client.closeFuture().await(5, TimeUnit.SECONDS);
+        assertTrue(!client.isActive(), "未发送 CONNECT 的连接应在握手超时后被服务端关闭");
+    }
+
+    @Test
+    void connectionAboveLimitIsClosedWithoutConnAck() throws Exception {
+        MqttProperties properties = properties();
+        properties.setMaxConnections(1);
+        ChannelManager channelManager = new ChannelManager();
+
+        server = new MqttServer(properties, channelManager, event -> { });
+        server.start();
+
+        BlockingQueue<Incoming> first = new LinkedBlockingQueue<>();
+        Channel firstClient = connect(server.getBoundPort(), first);
+        firstClient.writeAndFlush(connectMessage(DEVICE_ID)).sync();
+        await(first, MqttMessageType.CONNACK);
+
+        BlockingQueue<Incoming> second = new LinkedBlockingQueue<>();
+        Channel secondClient = connect(server.getBoundPort(), second);
+        secondClient.writeAndFlush(connectMessage("dev-mqtt-2")).sync();
+        // 超限连接被直接关闭（无 CONNACK），已有连接不受影响
+        secondClient.closeFuture().await(3, TimeUnit.SECONDS);
+        assertTrue(!secondClient.isActive(), "超限连接应被服务端关闭");
+        assertTrue(firstClient.isActive(), "已有连接不应受影响");
+    }
+
+    private MqttMessage connectMessage(String clientId) {
+        return MqttMessageBuilders.connect()
+                .protocolVersion(MqttVersion.MQTT_3_1_1)
+                .clientId(clientId)
+                .cleanSession(true)
+                .keepAlive(60)
+                .build();
+    }
+
     private MqttProperties properties() {
         MqttProperties properties = new MqttProperties();
         properties.setHost("127.0.0.1");

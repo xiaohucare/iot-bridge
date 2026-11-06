@@ -73,29 +73,31 @@ MQTT 不作为字节级协议插件接入，而是作为**独立接入层**（�
 | `iotbridge.mqtt.qos` | 0 | 下行 PUBLISH QoS，仅 0/1 |
 | `iotbridge.mqtt.username` / `password` | 空 | 非空启用 CONNECT 鉴权（常量时间比较） |
 | `iotbridge.mqtt.idle-seconds` | 300 | keepalive=0 时的兜底读空闲秒数 |
+| `iotbridge.mqtt.connect-timeout-seconds` | 30 | CONNECT 握手读空闲超时（秒）；连上不发 CONNECT 的连接超时断开（slowloris 防护），<=0 关闭 |
+| `iotbridge.mqtt.max-connections` | 10000 | 最大并发 TCP 连接数，超限新连接直接关闭，<=0 不限制 |
 | `iotbridge.mqtt.write-buffer-high/low-water-mark` | 65536 / 32768 | 出站写缓冲水位 |
 | `IOTBRIDGE_MQTT_USERNAME` / `IOTBRIDGE_MQTT_PASSWORD` | 空 | 上述凭据的环境变量入口 |
 
 ## 五、协议行为约定
 
-1. **设备身份**：CONNECT 的 `clientId` 即 `deviceId`（最长 128 字符），会话键为 `(mqtt, clientId)`。
+1. **设备身份**：CONNECT 的 `clientId` 即 `deviceId`（最长 128 字符），会话键为 `(mqtt, clientId)`；载荷中内嵌的 `deviceId` 字段会被剥离，防止伪造/双重身份。
 2. **上行**：PUBLISH 到 `iotbridge/uplink` 或其子主题；JSON 对象映射为 `payload`，非 JSON 保留 `payload.raw`；QoS1 回 PUBACK，QoS2 断开。
 3. **下行**：REST `protocolType=mqtt` → 编码为 `{"command","params","requestId"}` → 发布到 `iotbridge/downlink/<clientId>`；设备未订阅对应主题时写失败，走离线暂存/丢弃策略。
 4. **订阅**：支持 `+` / `#` 通配；SUBACK 授予 QoS 上限为 1。
-5. **活性**：keepalive 非 0 按 1.5 倍读空闲检测；为 0 用 `idle-seconds`。
+5. **活性**：CONNECT 前按 `connect-timeout-seconds` 做握手空闲检测；CONNECT 后 keepalive 非 0 按 1.5 倍读空闲检测、为 0 用 `idle-seconds`。
 6. **互踢**：同一 clientId 重复连接时新连接顶替旧连接（沿用 `ChannelManager` 语义）。
-7. **拒绝场景**：协议版本非 3.1/3.1.1、clientId 为空/超长、凭据错误、未 CONNECT 即发报文。
+7. **拒绝场景**：协议版本非 3.1/3.1.1、clientId 为空/超长、凭据错误、未 CONNECT 即发报文、并发连接超 `max-connections`。
 
 ## 六、测试与验证
 
 | 测试类 | 用例 | 覆盖 |
 | --- | --- | --- |
-| `MqttServerTest` | 3 | 真实 Netty MQTT 客户端端到端（CONNECT→SUBSCRIBE→PUBLISH 上行→下行 PUBLISH）、错误密码 CONNACK 拒绝、非法 QoS 启动失败 |
+| `MqttServerTest` | 5 | 真实 Netty MQTT 客户端端到端（CONNECT→SUBSCRIBE→PUBLISH 上行→下行 PUBLISH）、错误密码 CONNACK 拒绝、非法 QoS 启动失败、CONNECT 握手超时断开、连接数超限拒绝 |
 | `MqttTopicMatcherTest` | 6 | 精确 / `+` / `#` / 非法过滤器 / 订阅集合匹配 |
-| `MqttPayloadCodecTest` | 4 | JSON、非 JSON、空载荷、下行 JSON 编码 |
+| `MqttPayloadCodecTest` | 4 | JSON 载荷映射（内嵌 deviceId 剥离）、非 JSON、空载荷、下行 JSON 编码 |
 | `ProtocolStartupValidatorTest` | +3 | MQTT 协议缺失即启动失败、关闭时跳过、已注册通过 |
 
-全量 `mvn test`：**79/79 通过**（15 个测试类）。
+全量 `mvn test`：**81/81 通过**（15 个测试类）。
 
 ### 手工验证
 
@@ -118,7 +120,7 @@ curl -XPOST http://localhost:8080/api/v1/devices/dev-mqtt/commands \
 ## 八、仍存在的限制
 
 - 不支持 MQTT 5.0、QoS2、retained 消息、Will 消息；
-- 不做跨连接消息路由（非通用 Broker）；
+- **上行 QoS1 为「收到即回 PUBACK」**：解码/投递失败不重投，QoS1 仅保证 TCP 层传输，端到端不构成至少一次投递（如需闭环需实现处理成功后确认 + packetId 缓存）；
 - 下行 QoS1 不跟踪客户端重传；
 - 会话仍为单实例内存态，多实例需配合一致哈希路由；
 - 无 MQTT 指标监控（连接数、吞吐、拒绝次数）。

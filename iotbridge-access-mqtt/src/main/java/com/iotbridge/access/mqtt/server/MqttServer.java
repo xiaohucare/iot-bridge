@@ -17,6 +17,7 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.mqtt.MqttDecoder;
 import io.netty.handler.codec.mqtt.MqttEncoder;
+import io.netty.handler.timeout.IdleStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -24,6 +25,7 @@ import org.springframework.stereotype.Component;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * MQTT 3.1.1 服务端（轻量 Broker）。
@@ -48,6 +50,11 @@ public class MqttServer implements AccessServer {
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     private Channel serverChannel;
+
+    /**
+     * 当前并发 TCP 连接数（含未完成 CONNECT 的连接），供最大连接数限制判断。
+     */
+    private final AtomicInteger connectionCount = new AtomicInteger();
 
     public MqttServer(MqttProperties properties, ChannelManager channelManager,
                       UplinkFrameListener uplinkFrameListener) {
@@ -77,8 +84,15 @@ public class MqttServer implements AccessServer {
                             ch.pipeline().addLast("mqttEncoder", MqttEncoder.INSTANCE);
                             // 位于编码器之前（出站方向），把下行字节包装为 PUBLISH
                             ch.pipeline().addLast("mqttDownlink", new MqttDownlinkWriteHandler(properties));
-                            ch.pipeline().addLast("mqttConnection",
-                                    new MqttConnectionHandler(channelManager, uplinkFrameListener, properties));
+                            // CONNECT 握手期读空闲检测：连上但不发 CONNECT 的连接超时断开（slowloris 防护）；
+                            // 完成 CONNECT 后由连接处理器移除，避免与 keepalive 空闲检测冲突
+                            Integer connectTimeout = properties.getConnectTimeoutSeconds();
+                            if (connectTimeout != null && connectTimeout > 0) {
+                                ch.pipeline().addLast("mqttConnectIdle",
+                                        new IdleStateHandler(connectTimeout, 0, 0, TimeUnit.SECONDS));
+                            }
+                            ch.pipeline().addLast("mqttConnection", new MqttConnectionHandler(channelManager,
+                                    uplinkFrameListener, properties, connectionCount));
                         }
                     })
                     .bind(properties.getHost(), properties.getPort())
@@ -148,6 +162,14 @@ public class MqttServer implements AccessServer {
         Integer qos = properties.getQos();
         if (qos == null || qos < 0 || qos > 1) {
             throw new IllegalStateException("iotbridge.mqtt.qos 仅支持 0 或 1，当前: " + qos);
+        }
+        Integer connectTimeout = properties.getConnectTimeoutSeconds();
+        if (connectTimeout == null || connectTimeout < 0) {
+            throw new IllegalStateException("iotbridge.mqtt.connect-timeout-seconds 不能为负，当前: " + connectTimeout);
+        }
+        Integer maxConnections = properties.getMaxConnections();
+        if (maxConnections == null || maxConnections < 0) {
+            throw new IllegalStateException("iotbridge.mqtt.max-connections 不能为负，当前: " + maxConnections);
         }
     }
 

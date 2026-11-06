@@ -54,7 +54,6 @@ public final class MqttDemoClient {
     private MqttDemoClient() {
         // 工具类不允许实例化
     }
-
     /**
      * 客户端入口。
      *

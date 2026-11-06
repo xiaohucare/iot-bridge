@@ -27,15 +27,16 @@ class MqttPayloadCodecTest {
     }
 
     @Test
-    void decodeJsonPayloadKeepsFieldsAndEmbeddedDeviceId() {
+    void decodeJsonPayloadStripsEmbeddedDeviceId() {
         byte[] frame = "{\"deviceId\":\"dev-json\",\"temperature\":26.5}"
                 .getBytes(StandardCharsets.UTF_8);
 
         UplinkMessage message = codec().decode(frame);
 
+        // 身份一律以 CONNECT 的 clientId 为准：内嵌 deviceId 被剥离，防止伪造/双重身份
         assertEquals("mqtt", message.getProtocolType());
-        assertEquals("dev-json", message.getDeviceId());
         assertEquals(26.5, message.getPayload().get("temperature"));
+        assertTrue(!message.getPayload().containsKey("deviceId"));
         assertNotNull(message.getTimestamp());
     }
 

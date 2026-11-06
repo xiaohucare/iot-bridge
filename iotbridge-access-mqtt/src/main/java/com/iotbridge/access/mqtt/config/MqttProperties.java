@@ -75,6 +75,17 @@ public class MqttProperties {
     private String password = "";
 
     /**
+     * CONNECT 握手读空闲超时（秒）：连接建立后在超时内未收到 CONNECT 即断开，
+     * 防止只建 TCP 不发数据的连接长期占用资源（slowloris 式耗尽）；{@code <=0} 表示关闭检测。
+     */
+    private Integer connectTimeoutSeconds = 30;
+
+    /**
+     * 最大并发 TCP 连接数，超出后新连接直接关闭；{@code <=0} 表示不限制。
+     */
+    private Integer maxConnections = 10000;
+
+    /**
      * 客户端 CONNECT keepalive 为 0 时的兜底读空闲秒数（{@code <=0} 表示关闭检测）。
      * keepalive 非 0 时按 1.5 倍 keepalive 检测。
      */
@@ -184,6 +195,22 @@ public class MqttProperties {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public Integer getConnectTimeoutSeconds() {
+        return connectTimeoutSeconds;
+    }
+
+    public void setConnectTimeoutSeconds(Integer connectTimeoutSeconds) {
+        this.connectTimeoutSeconds = connectTimeoutSeconds;
+    }
+
+    public Integer getMaxConnections() {
+        return maxConnections;
+    }
+
+    public void setMaxConnections(Integer maxConnections) {
+        this.maxConnections = maxConnections;
     }
 
     public Integer getIdleSeconds() {

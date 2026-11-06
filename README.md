@@ -305,18 +305,21 @@ iotbridge:
     username: ${IOTBRIDGE_MQTT_USERNAME:}     # 非空则 CONNECT 必须携带匹配凭据
     password: ${IOTBRIDGE_MQTT_PASSWORD:}
     idle-seconds: 300             # keepalive=0 时的兜底读空闲检测
+    connect-timeout-seconds: 30   # CONNECT 握手空闲超时（连上不发 CONNECT 即断开，<=0 关闭）
+    max-connections: 10000        # 最大并发连接数（超限新连接直接关闭，<=0 不限制）
 ```
 
 **约定**
 
 | 项 | 规则 |
 | --- | --- |
-| 设备标识 | CONNECT 的 `clientId` 即 `deviceId`（最长 128 字符），也是会话键的第二段 |
+| 设备标识 | CONNECT 的 `clientId` 即 `deviceId`（最长 128 字符），也是会话键的第二段；载荷中内嵌的 `deviceId` 会被剥离（防伪造/双重身份） |
 | 上行 | 设备 PUBLISH 到 `iotbridge/uplink` 或其子主题；载荷交给 `MqttPayloadCodec`：JSON 对象原样映射为 `payload`，非 JSON 保留为 `payload.raw` |
 | 下行 | REST 指令 `protocolType=mqtt` → `MqttPayloadCodec.encode` 生成 `{"command","params","requestId"}` → 发布到 `iotbridge/downlink/<clientId>` |
 | 订阅 | 设备须先 SUBSCRIBE 目标主题（支持 `+`/`#` 通配）；未订阅时下行按「未送达」处理，可配合 `iotbridge.downlink.buffer-enabled` 暂存 |
-| QoS | 上行支持 QoS0/1（QoS1 回 PUBACK）；下行 QoS 由 `qos` 配置决定，QoS1 不跟踪客户端重传 |
+| QoS | 上行支持 QoS0/1（QoS1 **收到即回 PUBACK**，业务处理失败不重投，端到端不构成至少一次投递）；下行 QoS 由 `qos` 配置决定，QoS1 不跟踪客户端重传 |
 | 鉴权 | 配置 `username` 后校验用户名/密码（常量时间比较），失败回 CONNACK 拒绝并断开 |
+| 防护 | CONNECT 握手期空闲超时（`connect-timeout-seconds`）与最大并发连接数（`max-connections`）限制，超出即断开 |
 | 活性 | CONNECT `keepalive` 非 0 时按 1.5 倍做读空闲检测，超时断链；为 0 时用 `idle-seconds` |
 
 **限制**：不支持 MQTT 5.0、QoS2（收到即断开）、retained 消息持久化、Will 消息，以及跨连接的消息路由（网关只做设备接入，不做通用 Broker 的事件分发）。
@@ -463,6 +466,8 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 | `iotbridge.mqtt.qos` | 下行 PUBLISH QoS（0/1） | 0 |
 | `iotbridge.mqtt.username` / `password` | 接入凭据；username 为空允许匿名 | 空 |
 | `iotbridge.mqtt.idle-seconds` | CONNECT keepalive=0 时的兜底读空闲秒数 | 300 |
+| `iotbridge.mqtt.connect-timeout-seconds` | CONNECT 握手读空闲超时（连上不发 CONNECT 即断开，防慢连接占用资源）；<=0 关闭 | 30 |
+| `iotbridge.mqtt.max-connections` | 最大并发 TCP 连接数，超限新连接直接关闭；<=0 不限制 | 10000 |
 | `iotbridge.mqtt.write-buffer-high/low-water-mark` | MQTT 出站写缓冲水位（字节） | 65536 / 32768 |
 | `iotbridge.mq.uplink-topic` | 上行 Kafka 主题 | iotbridge.uplink |
 | `iotbridge.mq.downlink-queue` | 下行 RabbitMQ 队列；一致哈希模式下自动追加 `.<instance-id>` 做实例隔离 | iotbridge.downlink |
@@ -505,7 +510,7 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 mvn test
 ```
 
-共 **79** 个用例，全部通过：
+共 **81** 个用例，全部通过：
 
 | 模块 | 测试类 | 数量 | 覆盖 |
 | --- | --- | --- | --- |
@@ -513,9 +518,9 @@ mvn test
 | plugin-sos | `Crc16XmodemTest` | 2 | CRC16-XMODEM 标准向量 |
 | plugin-sos | `SosProtocolCodecTest` | 9 | 各命令解码、编码回解析自洽、篡改 CRC 必失败、ServiceLoader 发现 |
 | access-netty | `NettyTcpServerTest` | 7 | 多监听解析、全局默认继承、LENGTH_FIELD 必填 fail-fast、端口/重复地址校验 |
-| access-mqtt | `MqttServerTest` | 3 | 端到端 CONNECT/PUBLISH/订阅下行 PUBLISH、错误密码拒绝、QoS 配置 fail-fast |
+| access-mqtt | `MqttServerTest` | 5 | 端到端 CONNECT/PUBLISH/订阅下行 PUBLISH、错误密码拒绝、QoS 配置 fail-fast、CONNECT 握手超时断开、连接数超限拒绝 |
 | access-mqtt | `MqttTopicMatcherTest` | 6 | 精确/`+`/`#` 通配、非法过滤器、订阅匹配 |
-| access-mqtt | `MqttPayloadCodecTest` | 4 | JSON/非 JSON 载荷、空载荷、下行 JSON 编码 |
+| access-mqtt | `MqttPayloadCodecTest` | 4 | JSON 载荷映射（内嵌 deviceId 剥离）、非 JSON/空载荷、下行 JSON 编码 |
 | bridge-core | `ProtocolStartupValidatorTest` | 7 | 默认/监听协议启动校验、MQTT 协议缺失即失败、关闭时跳过 |
 | bridge-core | `ProtocolCodecRegistryTest` | 3 | 插件加载与回退解析 |
 | bridge-core | `ChannelManagerTest` | 9 | 会话注册/覆盖/下线/协议隔离/重复上线踢旧连接/设备索引/写缓冲满拒绝写入 |

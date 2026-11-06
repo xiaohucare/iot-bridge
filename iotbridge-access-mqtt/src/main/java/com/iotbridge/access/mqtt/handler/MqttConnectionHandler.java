@@ -55,16 +55,27 @@ public class MqttConnectionHandler extends SimpleChannelInboundHandler<MqttMessa
      */
     private static final int MAX_CLIENT_ID_LENGTH = 128;
 
+    /**
+     * CONNECT 握手期空闲检测处理器名（MqttServer 装配，CONNECT 完成后由本处理器移除）。
+     */
+    public static final String CONNECT_IDLE_HANDLER_NAME = "mqttConnectIdle";
+
     private final ChannelManager channelManager;
     private final UplinkFrameListener uplinkFrameListener;
     private final MqttProperties properties;
     private final MqttQoS downlinkQos;
 
+    /**
+     * 服务端级并发连接计数（含未完成 CONNECT 的连接），供最大连接数限制判断。
+     */
+    private final AtomicInteger connectionCount;
+
     public MqttConnectionHandler(ChannelManager channelManager, UplinkFrameListener uplinkFrameListener,
-                                 MqttProperties properties) {
+                                 MqttProperties properties, AtomicInteger connectionCount) {
         this.channelManager = channelManager;
         this.uplinkFrameListener = uplinkFrameListener;
         this.properties = properties;
+        this.connectionCount = connectionCount;
         this.downlinkQos = properties.getQos() != null && properties.getQos() == 1
                 ? MqttQoS.AT_LEAST_ONCE : MqttQoS.AT_MOST_ONCE;
     }
@@ -138,6 +149,10 @@ public class MqttConnectionHandler extends SimpleChannelInboundHandler<MqttMessa
                 .returnCode(MqttConnectReturnCode.CONNECTION_ACCEPTED)
                 .sessionPresent(false)
                 .build());
+        // CONNECT 已完成：移除握手期空闲检测，改由 keepalive 空闲检测接管，避免误断低频心跳设备
+        if (ctx.pipeline().get(CONNECT_IDLE_HANDLER_NAME) != null) {
+            ctx.pipeline().remove(CONNECT_IDLE_HANDLER_NAME);
+        }
         addIdleHandler(ctx, connect.variableHeader().keepAliveTimeSeconds());
         log.info("MQTT 设备已连接 clientId={} remote={} keepAlive={}s", clientId, ctx.channel().remoteAddress(),
                 connect.variableHeader().keepAliveTimeSeconds());
@@ -325,7 +340,21 @@ public class MqttConnectionHandler extends SimpleChannelInboundHandler<MqttMessa
     }
 
     @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        int current = connectionCount.incrementAndGet();
+        Integer max = properties.getMaxConnections();
+        if (max != null && max > 0 && current > max) {
+            log.warn("MQTT 连接数超限，拒绝新连接 current={} max={} remote={}", current, max,
+                    ctx.channel().remoteAddress());
+            ctx.close();
+            return;
+        }
+        super.channelActive(ctx);
+    }
+
+    @Override
     public void channelInactive(ChannelHandlerContext ctx) {
+        connectionCount.decrementAndGet();
         channelManager.unbindByChannel(ctx.channel());
         log.info("MQTT 设备连接断开 remote={}", ctx.channel().remoteAddress());
     }
@@ -333,9 +362,14 @@ public class MqttConnectionHandler extends SimpleChannelInboundHandler<MqttMessa
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
         if (evt instanceof IdleStateEvent) {
-            log.warn("MQTT 设备空闲超时，关闭连接 clientId={} state={}",
-                    ctx.channel().attr(MqttChannelAttributes.CLIENT_ID).get(),
-                    ((IdleStateEvent) evt).state());
+            String clientId = ctx.channel().attr(MqttChannelAttributes.CLIENT_ID).get();
+            if (clientId == null) {
+                // 来自握手期空闲检测：建连后始终未发 CONNECT
+                log.warn("MQTT CONNECT 握手超时，关闭连接 remote={}", ctx.channel().remoteAddress());
+            } else {
+                log.warn("MQTT 设备空闲超时，关闭连接 clientId={} state={}", clientId,
+                        ((IdleStateEvent) evt).state());
+            }
             ctx.close();
             return;
         }
