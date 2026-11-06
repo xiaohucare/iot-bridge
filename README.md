@@ -163,6 +163,20 @@ iotbridge (parent, pom)
 }
 ```
 
+模拟业务平台消费该主题并打印（独立进程，不影响线上消费组）：
+
+- IDE 直接运行 `com.iotbridge.demo.KafkaUplinkPrintConsumer.main`；
+- 可选参数 `args[0]`=bootstrap servers（默认取 `KAFKA_SERVERS`，否则 `localhost:9092`）、`args[1]`=主题（默认 `iotbridge.uplink`）、`args[2]`=消费组（默认 `iotbridge-demo-uplink-printer`）；
+- 启动后每收到一条上行会打印 `topic/partition/offset/key` 与 JSON 值，可与网关日志、MQTT 演示客户端对照验证链路；默认从最新位点开始消费（只看启动后的新消息）。
+
+完整业务闭环模拟（Kafka 上行 → 解析 → RabbitMQ 下行）：IDE 直接运行 `com.iotbridge.demo.BusinessLoopSimulator.main`。
+
+- 解析上行 `UplinkMessage` 并打印；同一设备默认每 5 秒最多下发一次 `setInterval(value=30)`，避免反向刷屏；
+- 业务处理成功后 `commitSync()` 提交 Kafka 位点，单条解析/投递失败仅告警不退出；
+- RabbitMQ 连接取 `RABBIT_HOST/PORT/USER/PASS`；下行交换机与路由键取 `DOWNLINK_EXCHANGE`（默认 `iotbridge.downlink.exchange`）、`DOWNLINK_ROUTING_KEY`（默认 `downlink`）；
+- 网关启用一致哈希时设 `DOWNLINK_EXCHANGE_TYPE=consistent-hash`，模拟器会自动改用 `deviceId` 作 routing key，与网关路由规则一致；
+- 下发间隔可用 `BUSINESS_DOWNLINK_INTERVAL_SECONDS` 调整。
+
 ### 5.2 下行（RabbitMQ）
 
 `RabbitDownlinkPublisher` 经 `iotbridge.downlink.exchange` 投递 `DownlinkCommand`（JSON）到持久队列 `iotbridge.downlink`。默认直连交换机 + 固定路由键 `downlink`（单实例）；设置 `iotbridge.mq.downlink-exchange-type=consistent-hash` 后改用一致哈希交换机，以 `deviceId` 作路由键、每实例队列独立，实现多实例按设备路由：

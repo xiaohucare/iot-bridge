@@ -1,5 +1,9 @@
 package com.iotbridge.demo;
 
+import java.util.Date;
+
+import org.assertj.core.util.DateUtil;
+
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
@@ -47,7 +51,7 @@ public final class DemoDeviceClient {
         String deviceId = args.length >= 1 ? args[0] : DEVICE_ID;
         String host = args.length >= 2 ? args[1] : HOST;
         int port = args.length >= 3 ? Integer.parseInt(args[2]) : PORT;
-        String uplinkSample = deviceId + ",temperature=26.5,humidity=60";
+        String uplinkSample = deviceId + ",temperature=26.5,humidity=60,date="+DateUtil.formatAsDatetime(new Date());
 
         EventLoopGroup group = new NioEventLoopGroup();
         try {
