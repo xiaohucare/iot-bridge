@@ -1,5 +1,6 @@
 package com.iotbridge.access.netty.server;
 
+import com.iotbridge.access.netty.api.AccessServer;
 import com.iotbridge.access.netty.api.UplinkFrameListener;
 import com.iotbridge.access.netty.config.NettyProperties;
 import com.iotbridge.access.netty.config.NettyProperties.FrameMode;
@@ -44,7 +45,7 @@ import java.util.concurrent.TimeUnit;
  * @date 2026-11-05
  */
 @Component
-public class NettyTcpServer {
+public class NettyTcpServer implements AccessServer {
 
     private static final Logger log = LoggerFactory.getLogger(NettyTcpServer.class);
 

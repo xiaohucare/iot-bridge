@@ -17,6 +17,7 @@ public class UplinkFrameEvent {
     private final byte[] frame;
     private final String remoteAddress;
     private final String protocolType;
+    private final String deviceId;
 
     /**
      * 构造上行帧事件（不指定协议，回退注册表默认协议）。
@@ -26,7 +27,7 @@ public class UplinkFrameEvent {
      * @param remoteAddress 远端地址描述
      */
     public UplinkFrameEvent(Channel channel, byte[] frame, String remoteAddress) {
-        this(channel, frame, remoteAddress, null);
+        this(channel, frame, remoteAddress, null, null);
     }
 
     /**
@@ -38,10 +39,25 @@ public class UplinkFrameEvent {
      * @param protocolType  该接入端口绑定的协议类型；为空时下游回退默认协议
      */
     public UplinkFrameEvent(Channel channel, byte[] frame, String remoteAddress, String protocolType) {
+        this(channel, frame, remoteAddress, protocolType, null);
+    }
+
+    /**
+     * 构造上行帧事件。
+     *
+     * @param channel       来源设备通道
+     * @param frame         原始帧字节（不含分隔符）
+     * @param remoteAddress 远端地址描述
+     * @param protocolType  该接入端口绑定的协议类型；为空时下游回退默认协议
+     * @param deviceId      接入层已知的设备标识（如 MQTT clientId）；为空时由协议解码结果提供
+     */
+    public UplinkFrameEvent(Channel channel, byte[] frame, String remoteAddress, String protocolType,
+                            String deviceId) {
         this.channel = channel;
         this.frame = frame;
         this.remoteAddress = remoteAddress;
         this.protocolType = protocolType;
+        this.deviceId = deviceId;
     }
 
     public Channel getChannel() {
@@ -63,5 +79,14 @@ public class UplinkFrameEvent {
      */
     public String getProtocolType() {
         return protocolType;
+    }
+
+    /**
+     * 接入层已知的设备标识（如 MQTT clientId）。
+     *
+     * @return 设备标识；为空表示由协议解码结果提供
+     */
+    public String getDeviceId() {
+        return deviceId;
     }
 }

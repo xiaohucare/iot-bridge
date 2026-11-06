@@ -81,6 +81,30 @@ iotbridge:
   uplink:
     worker-threads: 4
     queue-capacity: 10000
+  # MQTT 3.1.1 设备接入（内置轻量 Broker）：clientId 即设备号，上行 PUBLISH 走同一套解码/投递链路
+  mqtt:
+    enabled: true
+    host: 0.0.0.0
+    port: 1883
+    boss-threads: 1
+    worker-threads: 0
+    # 该接入在会话与下行路由中使用的协议类型，需与下行指令的 protocolType 一致
+    protocol-type: mqtt
+    # 单条 MQTT 报文上限（字节）
+    max-message-size: 65536
+    # 设备 PUBLISH 到该前缀下（含前缀本身）的主题视为上行数据
+    uplink-topic-prefix: iotbridge/uplink
+    # 网关向 <前缀>/<clientId> 发布下行指令；设备需先订阅该主题（可用 # / + 通配）
+    downlink-topic-prefix: iotbridge/downlink
+    # 下行 PUBLISH QoS：仅支持 0（至多一次）/ 1（至少一次，不跟踪客户端重传）
+    qos: 0
+    # 接入鉴权：username 为空允许匿名；非空时 CONNECT 必须携带匹配的用户名密码
+    username: ${IOTBRIDGE_MQTT_USERNAME:}
+    password: ${IOTBRIDGE_MQTT_PASSWORD:}
+    # CONNECT keepalive 为 0 时的兜底读空闲秒数；非 0 时按 1.5 倍 keepalive 检测
+    idle-seconds: 300
+    write-buffer-high-water-mark: 65536
+    write-buffer-low-water-mark: 32768
   # 管理端 REST 鉴权：api-key 非空时校验 X-Api-Key / Authorization: Bearer；留空则关闭（仅限本地开发）
   admin:
     api-key: ${IOTBRIDGE_API_KEY:}

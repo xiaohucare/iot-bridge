@@ -152,19 +152,40 @@ public class UplinkDispatcher implements UplinkFrameListener {
         try {
             ProtocolCodec codec = codecRegistry.resolve(event.getProtocolType());
             UplinkMessage message = codec.decode(event.getFrame());
+            // 接入层已知设备标识（如 MQTT clientId）优先；否则用协议解码结果（如 SOS IMEI）
+            String deviceId = resolveDeviceId(event.getDeviceId(), message.getDeviceId());
+            if (deviceId == null || deviceId.isEmpty()) {
+                log.warn("上行无法确定设备标识，丢弃该帧 remote={}", event.getRemoteAddress());
+                return;
+            }
+            message.setDeviceId(deviceId);
             // 绑定协议+设备与通道，供下行按 (protocol,deviceId) 寻址（不同协议相同设备号不互覆）
-            channelManager.register(message.getProtocolType(), message.getDeviceId(), event.getChannel());
+            channelManager.register(message.getProtocolType(), deviceId, event.getChannel());
             if (log.isDebugEnabled()) {
-                log.debug("上行分发 deviceId={} protocol={} payload={}", message.getDeviceId(),
+                log.debug("上行分发 deviceId={} protocol={} payload={}", deviceId,
                         message.getProtocolType(), message.getPayload());
             }
             uplinkProducer.send(message);
             // 设备（重新）上线，补发此前因离线暂存的下行指令；置于上行投递之后且内部隔离异常，不影响主链路
-            downlinkReflowService.reflow(message.getProtocolType(), message.getDeviceId());
+            downlinkReflowService.reflow(message.getProtocolType(), deviceId);
         } catch (RuntimeException ex) {
             // 单帧处理异常不中断连接，也不影响该分片后续帧
             log.error("上行帧处理异常 remote={} frameLen={}", event.getRemoteAddress(), event.getFrame().length, ex);
         }
+    }
+
+    /**
+     * 选择设备标识：接入层标识优先，缺失时回退协议解码结果。
+     *
+     * @param accessDeviceId 接入层已知设备标识（如 MQTT clientId）
+     * @param decodedDeviceId 协议解码得到的设备标识
+     * @return 生效的设备标识，可能为空
+     */
+    private String resolveDeviceId(String accessDeviceId, String decodedDeviceId) {
+        if (accessDeviceId != null && !accessDeviceId.isEmpty()) {
+            return accessDeviceId;
+        }
+        return decodedDeviceId;
     }
 
     @PreDestroy

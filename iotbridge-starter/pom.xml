@@ -29,6 +29,10 @@
         </dependency>
         <dependency>
             <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-access-mqtt</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.iotbridge</groupId>
             <artifactId>iotbridge-mq</artifactId>
         </dependency>
         <dependency>

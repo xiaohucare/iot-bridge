@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.iotbridge</groupId>
+        <artifactId>iotbridge</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>iotbridge-access-mqtt</artifactId>
+    <name>iotbridge-access-mqtt</name>
+    <description>MQTT 3.1.1 设备接入服务端：CONNECT/订阅/发布处理，上行交给 bridge-core，下行从 RabbitMQ 转发为 PUBLISH</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-spi</artifactId>
+        </dependency>
+        <!-- 复用通用会话管理（ChannelManager）与上行帧事件模型，保持 TCP/MQTT 会话寻址一致 -->
+        <dependency>
+            <groupId>com.iotbridge</groupId>
+            <artifactId>iotbridge-access-netty</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-all</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

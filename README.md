@@ -15,7 +15,7 @@
 - [4. 快速开始](#4-快速开始)
 - [5. 消息契约](#5-消息契约)
 - [6. REST API](#6-rest-api)
-- [7. 帧切分模式](#7-帧切分模式)
+- [7. 接入方式：帧切分、多协议监听与 MQTT](#7-接入方式帧切分多协议监听与-mqtt)
 - [8. 示例协议 demo-text](#8-示例协议-demo-text)
 - [9. SOS-C02 V3.0 消防设备协议](#9-sos-c02-v30-消防设备协议)
 - [10. 配置参考](#10-配置参考)
@@ -32,14 +32,15 @@
 ## 1. 特性
 
 - **协议插件化**：实现 `ProtocolCodec` SPI + `META-INF/services` 注册，网关启动自动发现，按 `protocolType` 路由；启动时校验默认协议与各监听绑定的协议均已注册，配置写错直接启动失败。
-- **全双工转发**：上行 TCP→Kafka，下行 REST→RabbitMQ→TCP，链路解耦、可独立伸缩。
+- **全双工转发**：上行 TCP/MQTT→Kafka，下行 REST→RabbitMQ→TCP/MQTT，链路解耦、可独立伸缩。
+- **MQTT 接入**：内置 MQTT 3.1.1 服务端，设备以 clientId 作设备号，上行 PUBLISH 与 TCP 设备共用解码/投递链路，下行指令发布到 `iotbridge/downlink/<clientId>`（QoS0/1，支持用户名密码鉴权与 keepalive 空闲检测）。
 - **文本/二进制并存**：Netty 帧切分支持行分隔（`DELIMITER`）与长度字段（`LENGTH_FIELD`）两种模式，可通过配置切换。
 - **上行不占 IO 线程**：入站回调仅投递任务，解码/会话登记/Kafka 投递在按连接哈希分片的有界工作线程池执行，Kafka 抖动不会拖垮 Netty EventLoop。
 - **会话管理**：`ChannelManager` 维护 `(protocolType, deviceId) <-> Channel` 双向映射，会话按「协议 + 设备号」复合键寻址，支持设备上下线清理与按设备寻址下发；不同协议下的相同 `deviceId` 各自独立，互不覆盖。
 - **连接活性检测**：读空闲超时自动断链，清理设备断电/NAT 超时留下的半开连接，避免 `isActive()` 长期为真造成在线误报。
 - **离线暂存重投（可选）**：开启后设备离线期间的下行按 `(protocolType, deviceId)` 暂存**原始指令**（有界 + TTL），设备重新上线后按会话串行、重新编码再补发（规避时间戳类指令失效、发送失败退回剩余帧），降低离线丢包。
 - **REST 鉴权**：可配置 API Key（`X-Api-Key` / `Authorization: Bearer`），常量时间比较；未配置时启动告警。
-- **优雅生命周期**：`GatewayLifecycle`（`SmartLifecycle`）随 Spring 容器自动启停 Netty 服务端。
+- **优雅生命周期**：`GatewayLifecycle`（`SmartLifecycle`）随 Spring 容器自动启停全部接入服务端（TCP、MQTT）。
 
 ## 2. 技术栈
 
@@ -47,15 +48,17 @@
 | --- | --- | --- |
 | JDK | 17（`maven.compiler.release=17`） | 语言运行时基线 |
 | Spring Boot | 3.2.5 | Web / 容器 / 自动装配（`jakarta.*`） |
-| Netty | 4.1.100.Final（`netty-bom`） | TCP 长连接接入 |
+| Netty | 4.1.100.Final（`netty-bom`） | TCP 长连接接入 + MQTT 3.1.1 编解码（`netty-codec-mqtt`） |
 | Spring Kafka | 随 Boot | 上行消息生产 |
 | Spring AMQP (RabbitMQ) | 随 Boot | 下行指令收发（JSON 转换） |
 
 ## 3. 架构与数据流
 
 ```
-上行:  设备 --TCP--> [access-netty 帧切分 + DeviceInboundHandler]
-                     --UplinkFrameEvent--> [bridge-core UplinkDispatcher: 投递到分片工作线程]
+上行:  设备 --TCP--> [access-netty 帧切分 + DeviceInboundHandler] ─┐
+       设备 --MQTT--> [access-mqtt MqttConnectionHandler: CONNECT/订阅/PUBLISH] ─┤
+                                                                  ├--UplinkFrameEvent-->
+                     [bridge-core UplinkDispatcher: 投递到分片工作线程]
                      [工作线程: SPI decode -> 会话登记 -> Kafka 投递 -> 上线补发]
                      --JSON--> [mq KafkaUplinkProducer] --Kafka--> 业务平台
 
@@ -63,7 +66,9 @@
                         --JSON--> [mq RabbitDownlinkPublisher] --RabbitMQ-->
                         [mq DownlinkCommandConsumer --DownlinkDispatchHandler-->
                          bridge-core DownlinkDispatcher: SPI encode]
-                        --byte[]--> [access-netty ChannelManager] --TCP--> 设备
+                        --byte[]--> [access-netty ChannelManager]
+                        ├--TCP--> 设备
+                        └--MQTT PUBLISH（MqttDownlinkWriteHandler）--> 设备
 ```
 
 模块与依赖（自底向上，杜绝循环依赖）：
@@ -76,6 +81,7 @@ iotbridge (parent, pom)
 ├── iotbridge-plugin-sos    SOS-C02/C03B/W03-A/C03-AO 消防设备协议 V3.0（二进制帧 + CRC16）
 ├── iotbridge-mq            Kafka 上行生产者 + RabbitMQ 下行消费者/发布者
 ├── iotbridge-access-netty  Netty TCP 服务端 + 帧切分 + 设备会话(Channel)管理
+├── iotbridge-access-mqtt   MQTT 3.1.1 服务端（CONNECT/订阅/PUBLISH）+ 下行 PUBLISH 适配
 ├── iotbridge-bridge-core   协议注册表 + 上/下行分发器 + 网关生命周期
 ├── iotbridge-admin         下行指令 REST API
 └── iotbridge-starter       Spring Boot 启动装配 + 配置 + 演示客户端
@@ -89,10 +95,12 @@ iotbridge (parent, pom)
 | `NettyTcpServer` | access-netty | 引导 boss/worker，装配帧解码器 + `DeviceInboundHandler` |
 | `DeviceInboundHandler` | access-netty | 接收整帧 `ByteBuf`，转字节封装 `UplinkFrameEvent` 回调监听器 |
 | `ChannelManager` | access-netty | `(protocolType,deviceId)<->Channel` 映射、上下线、`sendToDevice(protocolType,deviceId,byte[])` |
+| `MqttServer` | access-mqtt | MQTT 3.1.1 服务端：解码/编码、下行字节转 PUBLISH、随机端口可测 |
+| `MqttConnectionHandler` | access-mqtt | CONNECT 鉴权与注册、PUBLISH 上行、SUBSCRIBE/PING、断开清理 |
 | `ProtocolCodecRegistry` | bridge-core | ServiceLoader + Spring Bean 合并索引，`resolve()` / `getDefault()` |
 | `UplinkDispatcher` | bridge-core | 实现 `UplinkFrameListener`：按端口绑定协议解码 → 以 `(protocol,deviceId)` 绑定会话 → 投递 Kafka |
 | `DownlinkDispatcher` | bridge-core | 实现 `DownlinkDispatchHandler`：按协议编码 → 写入设备通道 |
-| `GatewayLifecycle` | bridge-core | `SmartLifecycle` 随容器启停 Netty |
+| `GatewayLifecycle` | bridge-core | `SmartLifecycle` 随容器启停全部接入服务端（TCP/MQTT） |
 | `KafkaUplinkProducer` / `RabbitDownlinkPublisher` | mq | 上行生产 / 下行发布 |
 | `CommandController` | admin | 下行指令 REST 入口 |
 
@@ -112,7 +120,7 @@ iotbridge (parent, pom)
    mvn -pl iotbridge-starter spring-boot:run
    # 或： java -jar iotbridge-starter/target/iotbridge.jar
    ```
-   - HTTP：`8080`；设备 TCP：SOS-C02 `9000`（LENGTH_FIELD）、demo-text `9001`（DELIMITER）
+   - HTTP：`8080`；设备 TCP：SOS-C02 `9000`（LENGTH_FIELD）、demo-text `9001`（DELIMITER）；MQTT：`1883`
 3. 运行模拟设备：在 IDE 直接运行 `com.iotbridge.demo.DemoDeviceClient.main`（位于 `iotbridge-starter` 测试目录），它连接 demo-text 端口 `9001` 并发送上行：
    ```
    dev001,temperature=26.5,humidity=60
@@ -124,8 +132,21 @@ iotbridge (parent, pom)
         -d '{"protocolType":"demo-text","command":"setInterval","params":{"value":30}}'
    ```
    模拟设备端将打印收到的下行报文：`dev001:setInterval:value=30`
+5. MQTT 设备接入（以 `mosquitto-clients` 为例）：先订阅下行主题，再发布上行载荷：
+   ```bash
+   # 订阅（clientId 即设备号 dev-mqtt）
+   mosquitto_sub -h localhost -p 1883 -i dev-mqtt -t iotbridge/downlink/dev-mqtt
+   # 上行：载荷为 JSON（非 JSON 会原样保留在 raw 字段）
+   mosquitto_pub -h localhost -p 1883 -i dev-mqtt -t iotbridge/uplink/dev-mqtt \
+        -m '{"temperature":26.5,"humidity":60}'
+   # 下行：protocolType 填 mqtt
+   curl -XPOST http://localhost:8080/api/v1/devices/dev-mqtt/commands \
+        -H 'Content-Type: application/json' \
+        -d '{"protocolType":"mqtt","command":"setInterval","params":{"value":30}}'
+   ```
+   （可选）也可在 IDE 运行 `com.iotbridge.demo.MqttDemoClient.main`：自动 CONNECT、订阅下行、发布一条 JSON 上行并定时 PINGREQ，终端直接打印网关下发的 PUBLISH。
 
-> 使用 `sos-c02` 二进制协议请见 [第 9 节](#9-sos-c02-v30-消防设备协议)。
+> 使用 `sos-c02` 二进制协议请见 [第 9 节](#9-sos-c02-v30-消防设备协议)；MQTT 细节见 [7.2](#72-mqtt-接入mqtt-311)。
 
 ## 5. 消息契约
 
@@ -228,7 +249,7 @@ curl "http://localhost:8080/api/v1/devices/869975034441082/online?protocol=sos-c
 
 > 在线状态基于当前网关实例内存会话（`ChannelManager`），以 `(protocolType, deviceId)` 为复合键；设备需成功处理过至少一帧上行才会登记，多实例部署时不共享。
 
-## 7. 帧切分模式与多协议监听
+## 7. 接入方式：帧切分、多协议监听与 MQTT
 
 `NettyTcpServer` 为**每个监听端口**装配其切帧方式：
 
@@ -265,6 +286,40 @@ iotbridge:
 ```
 
 > 注意：Spring 集合绑定**不跨属性源合并**——若用 `--iotbridge.netty.listeners[0].port=...` 命令行覆盖某一项，会整体替换 yml 中的 `listeners` 列表，导致 `name`/`protocol-type`/`frame-mode` 等未在同源声明的字段丢失。多协议请尽量在同一处（yml 或 profile）完整声明。
+
+### 7.2 MQTT 接入（MQTT 3.1.1）
+
+`iotbridge-access-mqtt` 内置轻量 MQTT 服务端，与 TCP 接入共享会话管理、解码投递、离线暂存与下行路由。
+
+```yaml
+iotbridge:
+  mqtt:
+    enabled: true                 # false 时完全不绑定端口
+    host: 0.0.0.0
+    port: 1883
+    protocol-type: mqtt           # 会话键与下行指令的 protocolType 均使用该值
+    max-message-size: 65536
+    uplink-topic-prefix: iotbridge/uplink     # 设备 PUBLISH 到该前缀下即视为上行
+    downlink-topic-prefix: iotbridge/downlink # 网关发布到 <前缀>/<clientId>
+    qos: 0                        # 下行 PUBLISH QoS：0/1
+    username: ${IOTBRIDGE_MQTT_USERNAME:}     # 非空则 CONNECT 必须携带匹配凭据
+    password: ${IOTBRIDGE_MQTT_PASSWORD:}
+    idle-seconds: 300             # keepalive=0 时的兜底读空闲检测
+```
+
+**约定**
+
+| 项 | 规则 |
+| --- | --- |
+| 设备标识 | CONNECT 的 `clientId` 即 `deviceId`（最长 128 字符），也是会话键的第二段 |
+| 上行 | 设备 PUBLISH 到 `iotbridge/uplink` 或其子主题；载荷交给 `MqttPayloadCodec`：JSON 对象原样映射为 `payload`，非 JSON 保留为 `payload.raw` |
+| 下行 | REST 指令 `protocolType=mqtt` → `MqttPayloadCodec.encode` 生成 `{"command","params","requestId"}` → 发布到 `iotbridge/downlink/<clientId>` |
+| 订阅 | 设备须先 SUBSCRIBE 目标主题（支持 `+`/`#` 通配）；未订阅时下行按「未送达」处理，可配合 `iotbridge.downlink.buffer-enabled` 暂存 |
+| QoS | 上行支持 QoS0/1（QoS1 回 PUBACK）；下行 QoS 由 `qos` 配置决定，QoS1 不跟踪客户端重传 |
+| 鉴权 | 配置 `username` 后校验用户名/密码（常量时间比较），失败回 CONNACK 拒绝并断开 |
+| 活性 | CONNECT `keepalive` 非 0 时按 1.5 倍做读空闲检测，超时断链；为 0 时用 `idle-seconds` |
+
+**限制**：不支持 MQTT 5.0、QoS2（收到即断开）、retained 消息持久化、Will 消息，以及跨连接的消息路由（网关只做设备接入，不做通用 Broker 的事件分发）。
 
 
 ## 8. 示例协议 demo-text
@@ -400,6 +455,15 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 | `iotbridge.uplink.worker-threads` | 上行处理分片数（按连接哈希固定分片，同连接帧有序；不占 Netty IO 线程） | 4 |
 | `iotbridge.uplink.queue-capacity` | 上行待处理帧总队列容量，溢出丢弃并采样告警（背压保护） | 10000 |
 | `iotbridge.admin.api-key` | REST 鉴权 API Key（`X-Api-Key` / `Authorization: Bearer`）；为空关闭鉴权并启动告警 | 空 |
+| `iotbridge.mqtt.enabled` | 是否启用 MQTT 3.1.1 接入（false 不绑定端口） | true |
+| `iotbridge.mqtt.host` / `port` | MQTT 监听地址/端口 | 0.0.0.0 / 1883 |
+| `iotbridge.mqtt.protocol-type` | MQTT 会话与下行指令使用的协议标识 | mqtt |
+| `iotbridge.mqtt.max-message-size` | 单条 MQTT 报文上限（字节） | 65536 |
+| `iotbridge.mqtt.uplink-topic-prefix` / `downlink-topic-prefix` | 上行主题前缀 / 下行主题前缀（实际下行主题 `<前缀>/<clientId>`） | iotbridge/uplink / iotbridge/downlink |
+| `iotbridge.mqtt.qos` | 下行 PUBLISH QoS（0/1） | 0 |
+| `iotbridge.mqtt.username` / `password` | 接入凭据；username 为空允许匿名 | 空 |
+| `iotbridge.mqtt.idle-seconds` | CONNECT keepalive=0 时的兜底读空闲秒数 | 300 |
+| `iotbridge.mqtt.write-buffer-high/low-water-mark` | MQTT 出站写缓冲水位（字节） | 65536 / 32768 |
 | `iotbridge.mq.uplink-topic` | 上行 Kafka 主题 | iotbridge.uplink |
 | `iotbridge.mq.downlink-queue` | 下行 RabbitMQ 队列；一致哈希模式下自动追加 `.<instance-id>` 做实例隔离 | iotbridge.downlink |
 | `iotbridge.mq.downlink-exchange` | 下行交换机 | iotbridge.downlink.exchange |
@@ -441,7 +505,7 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 mvn test
 ```
 
-共 **63** 个用例，全部通过：
+共 **79** 个用例，全部通过：
 
 | 模块 | 测试类 | 数量 | 覆盖 |
 | --- | --- | --- | --- |
@@ -449,7 +513,10 @@ mvn test
 | plugin-sos | `Crc16XmodemTest` | 2 | CRC16-XMODEM 标准向量 |
 | plugin-sos | `SosProtocolCodecTest` | 9 | 各命令解码、编码回解析自洽、篡改 CRC 必失败、ServiceLoader 发现 |
 | access-netty | `NettyTcpServerTest` | 7 | 多监听解析、全局默认继承、LENGTH_FIELD 必填 fail-fast、端口/重复地址校验 |
-| bridge-core | `ProtocolStartupValidatorTest` | 4 | 默认协议与监听协议启动校验、缺失即失败 |
+| access-mqtt | `MqttServerTest` | 3 | 端到端 CONNECT/PUBLISH/订阅下行 PUBLISH、错误密码拒绝、QoS 配置 fail-fast |
+| access-mqtt | `MqttTopicMatcherTest` | 6 | 精确/`+`/`#` 通配、非法过滤器、订阅匹配 |
+| access-mqtt | `MqttPayloadCodecTest` | 4 | JSON/非 JSON 载荷、空载荷、下行 JSON 编码 |
+| bridge-core | `ProtocolStartupValidatorTest` | 7 | 默认/监听协议启动校验、MQTT 协议缺失即失败、关闭时跳过 |
 | bridge-core | `ProtocolCodecRegistryTest` | 3 | 插件加载与回退解析 |
 | bridge-core | `ChannelManagerTest` | 9 | 会话注册/覆盖/下线/协议隔离/重复上线踢旧连接/设备索引/写缓冲满拒绝写入 |
 | bridge-core | `DownlinkBufferTest` | 10 | 暂存/补发/容量/TTL/超期定时清理/协议隔离 |
@@ -472,6 +539,7 @@ iot-bridge/
 │   └── .../sos/{SosProtocolCodec, model/SosFrame, protocol/{Crc16Xmodem,HexUtil,SosProtocolConstants}}
 ├── iotbridge-mq/
 ├── iotbridge-access-netty/
+├── iotbridge-access-mqtt/       # MQTT 3.1.1 服务端 + 下行 PUBLISH 适配 + 主题匹配
 ├── iotbridge-bridge-core/
 ├── iotbridge-admin/
 └── iotbridge-starter/           # 启动装配 + application.yml / application-sos.yml + 演示客户端
@@ -480,8 +548,9 @@ iot-bridge/
 ## 14. 设计说明与限制
 
 - **上行多协议**：上行按接入端口绑定的协议（`iotbridge.netty.listeners[].protocol-type`）解码，同一实例可在不同端口并行跑多种协议（如 9000=sos-c02 LENGTH_FIELD、9001=demo-text DELIMITER）；未绑定端口回退默认协议。单端口内的自动协议识别（根据首帧内容嗅探）尚未实现，不同帧长的二进制协议仍需分端口接入。
+- **MQTT 接入**：`iotbridge-access-mqtt` 内置 MQTT 3.1.1 服务端，clientId 即设备号，会话、在线查询、离线暂存与补发全部复用 `ChannelManager` 与同一套 `UplinkFrameListener`/`ProtocolCodec` 链路（协议标识 `mqtt`）；下行由 `MqttDownlinkWriteHandler` 把统一字节编码结果包装为 PUBLISH，并校验设备是否订阅了目标主题。仅支持 QoS0/1，不支持 MQTT 5.0、QoS2、retained、Will 与跨连接消息路由。
 - **上行线程模型**：Netty 入站回调只做「按远端地址哈希取分片 + 提交任务」，解码、会话登记、Kafka 投递与上线补发全部在独立单线程分片执行。同连接帧在固定分片内串行（保序），分片间并行；队列有界，溢出丢弃并采样告警。Kafka `max.block.ms` 显式设为 3s，broker 抖动最多影响单个分片而不是整条 EventLoop。
-- **连接活性**：`iotbridge.netty.reader-idle-seconds`（默认 180s）开启读空闲检测，超时主动断链，清理断电/NAT 超时留下的半开连接；出站写缓冲设置高低水位，超过高水位视为不可写，下行按未送达处理，避免慢设备撑爆内存。
+- **连接活性**：`iotbridge.netty.reader-idle-seconds`（默认 180s）开启读空闲检测，超时主动断链，清理断电/NAT 超时留下的半开连接；MQTT 侧按 CONNECT keepalive 的 1.5 倍检测（keepalive=0 用 `iotbridge.mqtt.idle-seconds`）；两侧均设置出站写缓冲高低水位，超过高水位视为不可写，下行按未送达处理，避免慢设备撑爆内存。
 - **下行协议路由**：下行按 `DownlinkCommand.protocolType` 经 `resolve()` 选择插件，为空回退默认。
 - **多实例下行路由**：单实例用 `direct` 交换机 + 固定路由键；多实例必须设置 `downlink-exchange-type=consistent-hash`，以 `deviceId` 作路由键、每实例队列独立（`<queue>.<instance-id>`），设备指令恒定命中同一实例队列，避免直连交换机「同键多队列 = 广播」导致的重复下发与随机错投。一致哈希依赖 RabbitMQ `rabbitmq_consistent_hash_exchange` 插件（3.8+ 随镜像提供，需启用）。
 - **会话隔离**：设备会话（在线注册、下行投递、离线暂存与补发）统一以 `SessionKey`（`protocolType` + `deviceId`）为复合键，不同协议下的相同 `deviceId` 各自独立、互不覆盖；`ChannelManager` 快照按协议、设备号升序输出，运维查在线可跨协议聚合或按 `protocol` 精确判定。
@@ -489,6 +558,6 @@ iot-bridge/
 - **在线判定即写即发（可选缓冲重投）**：设备离线时默认丢弃并告警；开启 `iotbridge.downlink.buffer-enabled` 后按 `(protocolType, deviceId)` 暂存**原始下行指令**（有界 + TTL），设备重新上线（收到上行）时由 `DownlinkReflowService` 在独立补发线程池（不占 Netty IO 线程，不同设备并行、同会话分段锁串行）**以当前指令重新编码后**按序补发（规避 `timeCalib` 等含时间戳指令在离线期间失效）；补发中发送失败则中断并把剩余帧按原序退回缓冲，等待下次上线，杜绝静默丢失。超期暂存由后台定时线程周期清理。缓冲仅存于当前实例内存，进程重启清空、多实例不共享。
 - **错误码与 HTTP 状态**：业务异常保留原始 `code`，并按类别映射 400/401/409/503，不再一律 200 + 系统错误。
 - **会话互踢**：同一 `(protocolType, deviceId)` 重复上线时新连接顶替旧连接，旧 TCP 连接被主动关闭，防止僵尸连接占用资源。
-- **安全**：REST 提供 API Key 鉴权（`iotbridge.admin.api-key`，`X-Api-Key` 或 `Authorization: Bearer`，常量时间比较），生产环境请同时通过 `server.ssl.*` 为 REST 开启 TLS；设备接入侧（9000/9001）为明文 TCP，如需链路加密需在设备与网关之间加 TLS 终结或专用安全网关。
-- **未包含**：设备级鉴权（设备注册白名单/证书）、指令幂等与应答确认闭环、设备影子持久化、集群化会话共享（跨实例会话仍各自持有，多实例需配合一致哈希路由）、指标监控等——接口位已预留，可迭代增强。
+- **安全**：REST 提供 API Key 鉴权（`iotbridge.admin.api-key`，`X-Api-Key` 或 `Authorization: Bearer`，常量时间比较），生产环境请同时通过 `server.ssl.*` 为 REST 开启 TLS；MQTT 可选用户名密码鉴权（`iotbridge.mqtt.username/password`，同样常量时间比较）；设备接入侧 TCP（9000/9001）与 MQTT（1883）均为明文，如需链路加密需在设备与网关之间加 TLS 终结或专用安全网关（MQTT TLS 常用 8883）。
+- **未包含**：设备级鉴权（设备注册白名单/证书）、指令幂等与应答确认闭环、设备影子持久化、集群化会话共享（跨实例会话仍各自持有，多实例需配合一致哈希路由）、指标监控、MQTT retained/Will/QoS2 等——接口位已预留，可迭代增强。
 - **SOS 样例帧**：因协议文档样例中厂商码/CRC 为占位，测试采用“自造合法帧 + 回解析自洽 + 篡改 CRC 必失败”策略；如有含真实值的完整样例帧，可补充逐字节比对用例。

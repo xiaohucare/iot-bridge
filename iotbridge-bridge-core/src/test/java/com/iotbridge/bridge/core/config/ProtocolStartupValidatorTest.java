@@ -67,6 +67,30 @@ class ProtocolStartupValidatorTest {
     }
 
     @Test
+    void failsWhenMqttProtocolMissingButEnabled() {
+        ProtocolStartupValidator validator = new ProtocolStartupValidator(
+                registry("demo-text", Set.of("demo-text")), netty("demo-text"), true, "mqtt");
+
+        assertThrows(IllegalStateException.class, validator::afterPropertiesSet);
+    }
+
+    @Test
+    void skipsMqttCheckWhenDisabled() {
+        ProtocolStartupValidator validator = new ProtocolStartupValidator(
+                registry("demo-text", Set.of("demo-text")), netty("demo-text"), false, "mqtt");
+
+        assertDoesNotThrow(validator::afterPropertiesSet);
+    }
+
+    @Test
+    void passesWhenMqttProtocolRegistered() {
+        ProtocolStartupValidator validator = new ProtocolStartupValidator(
+                registry("demo-text", Set.of("demo-text", "mqtt")), netty("demo-text"), true, "mqtt");
+
+        assertDoesNotThrow(validator::afterPropertiesSet);
+    }
+
+    @Test
     void listenerWithoutProtocolTypeFallsBackToDefault() {
         NettyProperties properties = new NettyProperties();
         properties.setListeners(Collections.emptyList());

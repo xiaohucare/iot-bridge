@@ -5,6 +5,8 @@ import com.iotbridge.bridge.core.registry.ProtocolCodecRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -26,10 +28,24 @@ public class ProtocolStartupValidator implements InitializingBean {
 
     private final ProtocolCodecRegistry codecRegistry;
     private final NettyProperties nettyProperties;
+    private final boolean mqttEnabled;
+    private final String mqttProtocolType;
 
-    public ProtocolStartupValidator(ProtocolCodecRegistry codecRegistry, NettyProperties nettyProperties) {
+    @Autowired
+    public ProtocolStartupValidator(ProtocolCodecRegistry codecRegistry, NettyProperties nettyProperties,
+                                    @Value("${iotbridge.mqtt.enabled:true}") boolean mqttEnabled,
+                                    @Value("${iotbridge.mqtt.protocol-type:mqtt}") String mqttProtocolType) {
         this.codecRegistry = codecRegistry;
         this.nettyProperties = nettyProperties;
+        this.mqttEnabled = mqttEnabled;
+        this.mqttProtocolType = mqttProtocolType;
+    }
+
+    /**
+     * 测试用构造器：默认关闭 MQTT 校验。
+     */
+    ProtocolStartupValidator(ProtocolCodecRegistry codecRegistry, NettyProperties nettyProperties) {
+        this(codecRegistry, nettyProperties, false, "mqtt");
     }
 
     @Override
@@ -50,6 +66,11 @@ public class ProtocolStartupValidator implements InitializingBean {
                 }
             }
         }
-        log.info("协议启动校验通过，默认协议={} 已注册={}", defaultType, supported);
+        if (mqttEnabled && !supported.contains(mqttProtocolType)) {
+            throw new IllegalStateException("MQTT 接入协议未注册：iotbridge.mqtt.protocol-type=" + mqttProtocolType
+                    + "，已注册协议=" + supported);
+        }
+        log.info("协议启动校验通过，默认协议={} MQTT协议={} 已注册={}", defaultType,
+                mqttEnabled ? mqttProtocolType : "disabled", supported);
     }
 }

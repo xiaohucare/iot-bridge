@@ -25,6 +25,7 @@
         <module>iotbridge-plugin-sos</module>
         <module>iotbridge-mq</module>
         <module>iotbridge-access-netty</module>
+        <module>iotbridge-access-mqtt</module>
         <module>iotbridge-bridge-core</module>
         <module>iotbridge-admin</module>
         <module>iotbridge-starter</module>
@@ -77,6 +78,11 @@
             <dependency>
                 <groupId>com.iotbridge</groupId>
                 <artifactId>iotbridge-access-netty</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.iotbridge</groupId>
+                <artifactId>iotbridge-access-mqtt</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
