@@ -580,3 +580,8 @@ iot-bridge/
 - **安全**：REST 提供 API Key 鉴权（`iotbridge.admin.api-key`，`X-Api-Key` 或 `Authorization: Bearer`，常量时间比较），生产环境请同时通过 `server.ssl.*` 为 REST 开启 TLS；MQTT 可选用户名密码鉴权（`iotbridge.mqtt.username/password`，同样常量时间比较）；设备接入侧 TCP（9000/9001）与 MQTT（1883）均为明文，如需链路加密需在设备与网关之间加 TLS 终结或专用安全网关（MQTT TLS 常用 8883）。
 - **未包含**：设备级鉴权（设备注册白名单/证书）、指令幂等与应答确认闭环、设备影子持久化、集群化会话共享（跨实例会话仍各自持有，多实例需配合一致哈希路由）、指标监控、MQTT retained/Will/QoS2 等——接口位已预留，可迭代增强。
 - **SOS 样例帧**：因协议文档样例中厂商码/CRC 为占位，测试采用“自造合法帧 + 回解析自洽 + 篡改 CRC 必失败”策略；如有含真实值的完整样例帧，可补充逐字节比对用例。
+
+# 启动：docker compose -f docker/docker-compose.yml up -d
+# 重启：docker compose -f docker/docker-compose.yml stop && docker compose -f docker/docker-compose.yml up -d
+# 停止：docker compose -f docker/docker-compose.yml stop
+# 彻底清理：docker compose -f docker/docker-compose.yml down

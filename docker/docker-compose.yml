@@ -1,5 +1,9 @@
 # 本地联调用：单节点 Kafka(KRaft) + RabbitMQ。仅用于跑通 iotbridge 上下行示例。
 # 启动：docker compose -f docker/docker-compose.yml up -d
+# 重启：docker compose -f docker/docker-compose.yml stop && docker compose -f docker/docker-compose.yml up -d
+# 停止：docker compose -f docker/docker-compose.yml stop
+# 彻底清理：docker compose -f docker/docker-compose.yml down
+
 services:
   kafka:
     image: apache/kafka:3.7.0
