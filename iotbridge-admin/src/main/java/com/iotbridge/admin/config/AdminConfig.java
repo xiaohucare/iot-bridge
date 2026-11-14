@@ -34,8 +34,24 @@ public class AdminConfig {
         FilterRegistrationBean<ApiKeyAuthFilter> registration =
                 new FilterRegistrationBean<>(new ApiKeyAuthFilter(properties));
         registration.addUrlPatterns("/api/*");
-        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 1);
         registration.setName("apiKeyAuthFilter");
+        return registration;
+    }
+
+    /**
+     * 注册链路标识过滤器：为每个请求生成 {@code traceId} 并写入 MDC，供日志模板输出。
+     *
+     * <p>顺序早于鉴权过滤器，保证「未通过鉴权」的请求日志也带链路标识。</p>
+     *
+     * @return 过滤器注册
+     */
+    @Bean
+    public FilterRegistrationBean<TraceIdFilter> traceIdFilter() {
+        FilterRegistrationBean<TraceIdFilter> registration = new FilterRegistrationBean<>(new TraceIdFilter());
+        registration.addUrlPatterns("/*");
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        registration.setName("traceIdFilter");
         return registration;
     }
 }

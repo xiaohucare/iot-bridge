@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @date 2026-11-06
  */
 @Component
-@ConditionalOnProperty(prefix = "iotbridge.mqtt", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "iotbridge.mqtt", name = "enabled", havingValue = "true", matchIfMissing = false)
 public class MqttServer implements AccessServer {
 
     private static final Logger log = LoggerFactory.getLogger(MqttServer.class);

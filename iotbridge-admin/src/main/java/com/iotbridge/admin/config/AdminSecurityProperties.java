@@ -28,6 +28,32 @@ public class AdminSecurityProperties {
         return apiKey != null && !apiKey.isBlank();
     }
 
+    /**
+     * REST 幂等键（{@code Idempotency-Key} 请求头）记忆时长（毫秒）；{@code <=0} 表示不过期。
+     */
+    private long idempotencyTtlMs = 600000L;
+
+    /**
+     * 幂等键记忆的最大条数；超限先清理过期项，仍超限则拒绝记忆（下次重试可能重复投放）。
+     */
+    private int idempotencyMaxEntries = 50000;
+
+    public long getIdempotencyTtlMs() {
+        return idempotencyTtlMs;
+    }
+
+    public void setIdempotencyTtlMs(long idempotencyTtlMs) {
+        this.idempotencyTtlMs = idempotencyTtlMs;
+    }
+
+    public int getIdempotencyMaxEntries() {
+        return idempotencyMaxEntries;
+    }
+
+    public void setIdempotencyMaxEntries(int idempotencyMaxEntries) {
+        this.idempotencyMaxEntries = idempotencyMaxEntries;
+    }
+
     public String getApiKey() {
         return apiKey;
     }

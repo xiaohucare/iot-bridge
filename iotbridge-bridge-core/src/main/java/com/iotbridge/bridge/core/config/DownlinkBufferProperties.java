@@ -44,6 +44,28 @@ public class DownlinkBufferProperties {
      */
     private int reflowThreads = 4;
 
+    /**
+     * 补发线程池的任务队列容量；满了直接拒绝并计数告警（形成背压，避免无界堆积）。
+     */
+    private int reflowQueueCapacity = 1024;
+
+    /**
+     * 是否开启下行投递幂等去重：同一 {@code (protocolType, deviceId, requestId)} 在 TTL 内
+     * <b>只投递一次</b>（仅对「确认送达」或「已暂存」的指令记账），用于抑制 MQ 重投与 REST 重试
+     * 造成的重复执行。
+     */
+    private boolean idempotencyEnabled = true;
+
+    /**
+     * 幂等去重记录存活时间（毫秒）。{@code <=0} 表示不过期（不推荐，内存只能靠容量上限约束）。
+     */
+    private long idempotencyTtlMs = 600000L;
+
+    /**
+     * 幂等去重记录的最大条数；超限先清理过期项，仍超限则拒绝新记账并告警。
+     */
+    private int idempotencyMaxEntries = 100000;
+
     public boolean isBufferEnabled() {
         return bufferEnabled;
     }
@@ -82,5 +104,37 @@ public class DownlinkBufferProperties {
 
     public void setReflowThreads(int reflowThreads) {
         this.reflowThreads = reflowThreads;
+    }
+
+    public int getReflowQueueCapacity() {
+        return reflowQueueCapacity;
+    }
+
+    public void setReflowQueueCapacity(int reflowQueueCapacity) {
+        this.reflowQueueCapacity = reflowQueueCapacity;
+    }
+
+    public boolean isIdempotencyEnabled() {
+        return idempotencyEnabled;
+    }
+
+    public void setIdempotencyEnabled(boolean idempotencyEnabled) {
+        this.idempotencyEnabled = idempotencyEnabled;
+    }
+
+    public long getIdempotencyTtlMs() {
+        return idempotencyTtlMs;
+    }
+
+    public void setIdempotencyTtlMs(long idempotencyTtlMs) {
+        this.idempotencyTtlMs = idempotencyTtlMs;
+    }
+
+    public int getIdempotencyMaxEntries() {
+        return idempotencyMaxEntries;
+    }
+
+    public void setIdempotencyMaxEntries(int idempotencyMaxEntries) {
+        this.idempotencyMaxEntries = idempotencyMaxEntries;
     }
 }

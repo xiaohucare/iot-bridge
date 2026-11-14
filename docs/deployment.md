@@ -77,7 +77,21 @@ IOTBRIDGE_API_KEY=<强随机串> \
 
 > 生产部署必须设置 `IOTBRIDGE_API_KEY`（未配置时启动仅告警，REST 接口对任何调用方开放）；MQTT 接入建议同时配置 `IOTBRIDGE_MQTT_USERNAME/PASSWORD`（未配置时允许匿名连接），并建议通过 `server.ssl.*` 为 REST 端口开启 TLS；设备接入端口 TCP（9000/9001）与 MQTT（1883）为明文，如需链路加密应在网关前置 TLS 终结或专用安全网关（MQTT TLS 常用 8883）。
 
-### 4.4 多实例部署
+### 4.4 生产安全基线（`prod` profile）
+
+以 `--spring.profiles.active=prod` 启动时，`ProductionSecurityGuard` 会在容器启动阶段校验关键安全配置，
+不满足时**直接拒绝启动**（而不是仅告警后以无鉴权状态对外服务）：
+
+- `iotbridge.admin.api-key`（`IOTBRIDGE_API_KEY`）为空 → 启动失败；
+- `iotbridge.mqtt.enabled=true` 但 `iotbridge.mqtt.username` 为空（允许匿名接入）→ 启动失败。
+
+非 prod profile 下同样场景只记录 WARN，便于本地开发。日志示例：
+
+```
+生产环境安全基线未满足，拒绝启动：iotbridge.admin.api-key 未配置（REST 下行指令将无鉴权）;
+```
+
+### 4.5 多实例部署
 
 多实例必须让同一设备的指令恒定命中同一实例，否则会出现「指令投到 A、设备连接在 B」的静默失败（旧配置下固定 routing key 还会因多队列绑定造成广播重复下发）：
 
@@ -95,14 +109,14 @@ rabbitmq-plugins enable rabbitmq_consistent_hash_exchange
 
 启用后每实例队列为 `<downlink-queue>.<instance-id>`，以 `deviceId` 作 routing key 哈希，设备指令按哈希落到唯一队列。
 
-### 4.5 MQTT 接入
+### 4.6 MQTT 接入
 
-内置 MQTT 3.1.1 服务端随容器启停，默认监听 `1883`，可通过 `iotbridge.mqtt.enabled=false` 关闭：
+内置 MQTT 3.1.1 服务端**默认关闭**（不绑定 1883），需要时显式启用；启用前请先配置鉴权并规划 TLS 终结：
 
 ```yaml
 iotbridge:
   mqtt:
-    enabled: true
+    enabled: true            # 默认 false；true 才监听 port
     port: 1883
     protocol-type: mqtt                       # 下行指令的 protocolType 需填该值
     uplink-topic-prefix: iotbridge/uplink     # 设备 PUBLISH 到此前缀下视为上行
@@ -190,7 +204,10 @@ REST 接口定义：
 
 ## 7. 日志
 
-- 门面：SLF4J + Logback；命名空间 `com.iotbridge` 默认 `INFO`，`root` 为 `INFO`。
+- 门面：SLF4J + Logback；命名空间 `com.iotbridge` 默认 `INFO`，`root` 为 `INFO`；配置见 `iotbridge-starter/src/main/resources/logback-spring.xml`。
+- 输出：控制台 + 滚动文件 `logs/iotbridge.log`（单文件 100MB、保留 30 天、总量上限 2GB），可用环境变量 `LOG_PATH` 改目录。
+- 日志模板包含链路字段，便于串联一次请求：`[traceId][deviceId][requestId]`。`traceId` 由 REST 过滤器生成或透传 `X-Trace-Id`（同时回写响应头）；`deviceId`/`protocolType` 在上行处理与补发线程写入 MDC；`requestId` 在下行分发时写入。
+- 定位一次下发：`grep '<requestId>' logs/iotbridge.log` 可看到「REST 接收 → 消费 → 写入结果」全链路。
 - **会话登记日志已在每帧路径上消除**：同一连接重复上报不会再产生「设备上线」日志，只有首次绑定、重复上线踢旧连接、下线时才输出；排查某设备是否在持续上报请查看上行 Kafka 消费而非网关日志。
 - 调整级别示例：
 
@@ -199,6 +216,19 @@ REST 接口定义：
   ```
 
 - 上行 Kafka 投递失败、下行 CRC 失败、设备离线丢弃等均有 `ERROR`/`WARN` 记录，便于定位。
+
+### 7.1 健康检查与指标（actuator）
+
+```bash
+curl -s localhost:8080/actuator/health            # {"status":"UP"}
+curl -s localhost:8080/actuator/health/liveness   # 容器存活探针
+curl -s localhost:8080/actuator/health/readiness  # 就绪探针（接入服务与依赖就绪）
+curl -s localhost:8080/actuator/prometheus | grep iotbridge_
+```
+
+指标清单与告警建议见 [monitoring/metrics.md](./monitoring/metrics.md)。容器编排建议：
+`livenessProbe` 指向 `/actuator/health/liveness`，`readinessProbe` 指向 `/actuator/health/readiness`。
+生产环境如需隔离管理面，可设置独立的 `management.server.port` 并只在内网暴露。
 
 ## 8. 故障排查
 
@@ -217,6 +247,10 @@ REST 接口定义：
 | MQTT 设备 CONNACK 拒绝 | 协议版本非 3.1/3.1.1、clientId 为空/超 128、用户名密码不匹配 | 按 CONNACK 返回码分别修正；已配置 `iotbridge.mqtt.username` 时必须携带匹配凭据 |
 | MQTT 在线但下行收不到 | 设备未 SUBSCRIBE 下行主题，或订阅过滤器不匹配 | 设备订阅 `iotbridge/downlink/<clientId>`（或 `iotbridge/downlink/#`）；必要时开启离线暂存 |
 | MQTT 连接周期性断开 | 设备 keepalive 期间无任何报文，超过 1.5 倍 keepalive 被判空闲 | 让设备按 keepalive 周期发送 PINGREQ，或调大客户端 keepalive |
+| 启动失败 `生产环境安全基线未满足` | `prod` 下缺少 `iotbridge.admin.api-key`，或 MQTT 启用但未配 `username` | 配置 `IOTBRIDGE_API_KEY` / `IOTBRIDGE_MQTT_USERNAME` 后重启；本地开发改用非 prod profile |
+| 下行日志出现 `送达状态未知（写等待超时）` | 设备网络慢或出站积压，写等待 5s 未完成 | 该指令**不会**重投（可能已送达），需设备应答/业务对账确认；持续出现请评估水位与带宽 |
+| 重复下发同一 requestId 被拒 | 命中投递幂等（该请求号已确认送达） | 属预期行为；如确需再次执行，请用新的 `requestId`/`Idempotency-Key` |
+| 端口 1883 未被监听 | MQTT 默认关闭 | 需要 MQTT 时显式设置 `iotbridge.mqtt.enabled=true` |
 | 端口 1883 启动失败 | 端口被占用或 `port` 非法 | 修改 `iotbridge.mqtt.port` / 释放端口；启动期已有明确校验与告警 |
 | Kafka/Rabbit 连接失败 | 地址/凭据错误或中间件未就绪 | 用环境变量覆盖 `KAFKA_SERVERS`、`RABBIT_*`；先起中间件再起网关 |
 | RabbitMQ 反复报 `channel error ... 406 PRECONDITION_FAILED - inequivalent arg 'x-dead-letter-exchange' for queue 'iotbridge.downlink'` | RabbitMQ 中已存在旧版本网关声明的同名队列（无死信参数）；RabbitMQ 不允许对已存在队列变更参数，新声明被拒绝 | 删除旧队列后重启网关，应用会按新声明（含死信参数）自动重建：管理台 http://localhost:15672 → Queues → Delete，或 `curl -u guest:guest -X DELETE http://localhost:15672/api/queues/%2F/iotbridge.downlink`。注意：删除会清空该队列未消费的下行指令 |
@@ -239,4 +273,5 @@ REST 接口定义：
 - 下行离线暂存重投为可选（`iotbridge.downlink.buffer-enabled`，默认关闭）：开启后按 `(protocolType, deviceId)` 在有界队列暂存**原始指令**，设备重新上线（收到上行）时由 `DownlinkReflowService` 按会话串行、**重新编码**后按序补发（规避 `timeCalib` 等时间戳指令失效）；补发中发送失败会把剩余帧按原序退回缓冲等待下次上线，超 TTL 或超容量丢弃；内存受双重上限约束（单设备 `max-pending-per-device` + 设备数 `max-pending-devices`，后者超限时淘汰最陈旧设备队列）；仅当前实例内存，多实例不共享、进程重启即清空。
 - 会话以 `(protocolType, deviceId)` 复合键隔离（`SessionKey`）：在线注册、下行投递、离线暂存与补发均按此键寻址，不同协议下的相同 `deviceId` 各自独立、互不覆盖；`GET /api/v1/devices/{deviceId}/online` 不传 `protocol` 时为跨协议聚合判定。
 - MQTT 接入为轻量设备侧 Broker（MQTT 3.1.1）：仅支持 CONNECT/PUBLISH/SUBSCRIBE/UNSUBSCRIBE/PING/DISCONNECT 与 QoS0/1；不支持 MQTT 5.0、QoS2、retained 消息、Will 消息与跨连接消息路由；设备须主动订阅下行主题（未订阅按未送达处理）。
-- 未内置设备鉴权（MQTT 仅可选用户名密码，无证书/白名单）、指令幂等与应答闭环、设备影子持久化、集群会话共享与指标监控——均预留扩展点。
+- 已内置：下行三态投递语义（超时不重投）、投递级与 REST 级幂等、健康检查与 Prometheus 指标、日志链路字段。
+- 仍未内置：设备级鉴权（TCP 设备身份由帧内 `deviceId` 决定，可被顶替）、指令**应答**闭环（设备 ACK 回传与 `requestId` 状态查询）、设备影子持久化、跨实例会话/离线缓冲共享、链路 TLS、TCP 侧连接数与速率限制——均预留扩展点，详见 `design-review-2026-11-14.md`。

@@ -4,6 +4,7 @@ import com.iotbridge.access.netty.api.UplinkFrameEvent;
 import com.iotbridge.access.netty.api.UplinkFrameListener;
 import com.iotbridge.access.netty.session.ChannelManager;
 import com.iotbridge.bridge.core.config.UplinkProperties;
+import com.iotbridge.bridge.core.metrics.BridgeMetrics;
 import com.iotbridge.bridge.core.registry.ProtocolCodecRegistry;
 import com.iotbridge.bridge.core.reflow.DownlinkReflowService;
 import com.iotbridge.mq.api.UplinkProducer;
@@ -12,6 +13,7 @@ import com.iotbridge.spi.model.UplinkMessage;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -51,6 +53,7 @@ public class UplinkDispatcher implements UplinkFrameListener {
     private final ChannelManager channelManager;
     private final UplinkProducer uplinkProducer;
     private final DownlinkReflowService downlinkReflowService;
+    private final BridgeMetrics metrics;
 
     /**
      * 上行工作分片，每个分片一个单线程执行器；为空表示未启用（仅测试使用同步执行器场景）。
@@ -59,12 +62,38 @@ public class UplinkDispatcher implements UplinkFrameListener {
     private final boolean ownsWorkers;
     private final AtomicLong droppedFrames = new AtomicLong();
 
+    /**
+     * Spring 注入用构造。
+     *
+     * @param codecRegistry         协议注册表
+     * @param channelManager        会话管理
+     * @param uplinkProducer        上行生产者
+     * @param downlinkReflowService 补发服务
+     * @param uplinkProperties      上行线程池配置
+     * @param metrics               指标
+     */
     @Autowired
     public UplinkDispatcher(ProtocolCodecRegistry codecRegistry, ChannelManager channelManager,
                             UplinkProducer uplinkProducer, DownlinkReflowService downlinkReflowService,
-                            UplinkProperties uplinkProperties) {
+                            UplinkProperties uplinkProperties, BridgeMetrics metrics) {
         this(codecRegistry, channelManager, uplinkProducer, downlinkReflowService,
-                newWorkers(uplinkProperties), true);
+                newWorkers(uplinkProperties), true, metrics);
+    }
+
+    /**
+     * 以配置构造（指标为空操作），保持既有调用方兼容。
+     *
+     * @param codecRegistry         协议注册表
+     * @param channelManager        会话管理
+     * @param uplinkProducer        上行生产者
+     * @param downlinkReflowService 补发服务
+     * @param uplinkProperties      上行线程池配置
+     */
+    public UplinkDispatcher(ProtocolCodecRegistry codecRegistry, ChannelManager channelManager,
+                            UplinkProducer uplinkProducer, DownlinkReflowService downlinkReflowService,
+                            UplinkProperties uplinkProperties) {
+        this(codecRegistry, channelManager, uplinkProducer, downlinkReflowService, uplinkProperties,
+                BridgeMetrics.NOOP);
     }
 
     /**
@@ -80,18 +109,19 @@ public class UplinkDispatcher implements UplinkFrameListener {
                             UplinkProducer uplinkProducer, DownlinkReflowService downlinkReflowService,
                             Executor executor) {
         this(codecRegistry, channelManager, uplinkProducer, downlinkReflowService,
-                new Executor[]{executor}, false);
+                new Executor[]{executor}, false, BridgeMetrics.NOOP);
     }
 
     private UplinkDispatcher(ProtocolCodecRegistry codecRegistry, ChannelManager channelManager,
                              UplinkProducer uplinkProducer, DownlinkReflowService downlinkReflowService,
-                             Executor[] workers, boolean ownsWorkers) {
+                             Executor[] workers, boolean ownsWorkers, BridgeMetrics metrics) {
         this.codecRegistry = codecRegistry;
         this.channelManager = channelManager;
         this.uplinkProducer = uplinkProducer;
         this.downlinkReflowService = downlinkReflowService;
         this.workers = workers;
         this.ownsWorkers = ownsWorkers;
+        this.metrics = metrics;
     }
 
     /**
@@ -124,6 +154,7 @@ public class UplinkDispatcher implements UplinkFrameListener {
             worker.execute(() -> process(event));
         } catch (RejectedExecutionException ex) {
             long dropped = droppedFrames.incrementAndGet();
+            metrics.uplinkDropped();
             if (dropped == 1 || dropped % DROP_LOG_SAMPLE == 0) {
                 log.warn("上行处理队列已满，丢弃该帧 remote={} 累计丢弃={}", event.getRemoteAddress(), dropped);
             }
@@ -149,16 +180,22 @@ public class UplinkDispatcher implements UplinkFrameListener {
      * @param event 上行帧事件
      */
     private void process(UplinkFrameEvent event) {
+        String protocolType = null;
         try {
             ProtocolCodec codec = codecRegistry.resolve(event.getProtocolType());
             UplinkMessage message = codec.decode(event.getFrame());
             // 接入层已知设备标识（如 MQTT clientId）优先；否则用协议解码结果（如 SOS IMEI）
             String deviceId = resolveDeviceId(event.getDeviceId(), message.getDeviceId());
             if (deviceId == null || deviceId.isEmpty()) {
+                metrics.uplinkFrame(message.getProtocolType(), BridgeMetrics.UPLINK_NO_DEVICE_ID);
                 log.warn("上行无法确定设备标识，丢弃该帧 remote={}", event.getRemoteAddress());
                 return;
             }
             message.setDeviceId(deviceId);
+            protocolType = message.getProtocolType();
+            // 把设备与协议写入 MDC，使解码失败日志也能定位到具体设备/协议
+            MDC.put("deviceId", deviceId);
+            MDC.put("protocolType", protocolType == null ? "" : protocolType);
             // 绑定协议+设备与通道，供下行按 (protocol,deviceId) 寻址（不同协议相同设备号不互覆）
             channelManager.register(message.getProtocolType(), deviceId, event.getChannel());
             if (log.isDebugEnabled()) {
@@ -166,11 +203,16 @@ public class UplinkDispatcher implements UplinkFrameListener {
                         message.getProtocolType(), message.getPayload());
             }
             uplinkProducer.send(message);
+            metrics.uplinkFrame(protocolType, BridgeMetrics.UPLINK_OK);
             // 设备（重新）上线，补发此前因离线暂存的下行指令；置于上行投递之后且内部隔离异常，不影响主链路
             downlinkReflowService.reflow(message.getProtocolType(), deviceId);
         } catch (RuntimeException ex) {
             // 单帧处理异常不中断连接，也不影响该分片后续帧
+            metrics.uplinkFrame(protocolType, BridgeMetrics.UPLINK_ERROR);
             log.error("上行帧处理异常 remote={} frameLen={}", event.getRemoteAddress(), event.getFrame().length, ex);
+        } finally {
+            MDC.remove("deviceId");
+            MDC.remove("protocolType");
         }
     }
 

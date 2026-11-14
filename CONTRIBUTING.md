@@ -40,14 +40,24 @@ java -jar iotbridge-starter/target/iotbridge.jar
 自底向上组织，**严禁循环依赖**：
 
 ```
-common → spi → plugin-* / mq / access-netty → bridge-core → admin → starter
+common
+  └─ spi
+       ├─ plugin-demo / plugin-sos
+       ├─ mq
+       ├─ access-netty        （传输基础设施：会话管理 ChannelManager）
+       │     └─ access-mqtt   （内部 MQTT 服务端，复用 ChannelManager）
+       └─ bridge-core         （依赖 spi + mq + access-netty）
+             └─ admin         （依赖 common + spi + mq）
+                  └─ starter  （聚合装配）
 ```
 
 关键约束（改动前务必遵守）：
 
-- `access-netty` 与 `mq` **不得反向依赖** `bridge-core`。
-- 上行由接入层通过 spi 的 `UplinkFrameListener` 向上回调、下行由 mq 通过 spi 的 `DownlinkDispatchHandler` 向下回调，二者均由 `bridge-core` 实现，实现依赖倒置。
-- 对外契约（编解码 SPI、消息模型、会话查询接口 `DeviceSessionQuery` / `DeviceSessionView` / `SessionKey`）统一放在 `spi`，供上层消费而不泄漏传输层细节（如 Netty `Channel`）。
+- `access-netty` / `access-mqtt` / `mq` **不得反向依赖** `bridge-core`、`admin`。
+- 上行由接入层回调 `UplinkFrameListener` / `UplinkFrameEvent`（位于 `access-netty` 的 `api` 包，因需持有 Netty `Channel` 而不放入 `spi`）；
+  下行由 `mq` 通过 `spi` 的 `DownlinkDispatchHandler` 向下回调；上行/下行投递的中间件契约 `UplinkProducer` / `DownlinkPublisher` 位于 `mq.api`。
+- 传输无关的对外契约统一放在 `spi`：编解码 `ProtocolCodec`、消息模型、会话查询 `DeviceSessionQuery` / `DeviceSessionView` / `SessionKey`、投递结果 `DeliveryResult`。
+- **已知待改点**：`bridge-core` 目前直接依赖 `access-netty` 的 `ChannelManager`（Netty `Channel` 语义），新增加第三种接入方式前应把「会话注册 + 下行写入」抽象上移到 `spi`（见 `docs/design-review-2026-11-14.md` P1-8），不要在新模块里再复制一份 `ChannelManager`。
 - 新增协议：实现 `ProtocolCodec` 并在 `META-INF/services` 注册，无需改动网关主干。
 
 ## 4. 代码规范
@@ -66,6 +76,8 @@ common → spi → plugin-* / mq / access-netty → bridge-core → admin → st
 
 - 每个行为变更配套单元/集成测试；协议编解码补充回解析自洽与篡改校验用例。
 - 涉及会话/下行寻址的改动，需覆盖「相同设备号、不同协议互不覆盖」的隔离场景。
+- 涉及下行投递的改动，需覆盖三态语义：`UNKNOWN`（写等待超时）**不得**进入离线暂存/重投；`NOT_DELIVERED` 才允许暂存；同一 `requestId` 已送达后重复投递必须被幂等跳过。
+- 涉及缓存/队列的改动，必须给出容量上限与超限行为（拒绝并计数），不得引入无界队列。
 - 提交前确保 `mvn clean package` 全绿。
 
 ## 7. 提交与 PR 流程

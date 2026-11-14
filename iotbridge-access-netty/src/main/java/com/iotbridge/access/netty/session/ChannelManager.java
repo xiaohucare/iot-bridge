@@ -1,5 +1,6 @@
 package com.iotbridge.access.netty.session;
 
+import com.iotbridge.spi.session.DeliveryResult;
 import com.iotbridge.spi.session.SessionKey;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -152,49 +153,62 @@ public class ChannelManager {
     }
 
     /**
-     * 向指定协议下的目标设备写入下行字节帧。
+     * 向指定协议下的目标设备写入下行字节帧，返回<b>三态</b>送达结果。
      *
-     * <p>同步等待写操作完成（有界超时），返回真实发送结果，杜绝「写入尚未完成即报成功」的假成功；
-     * 写失败/超时返回 {@code false}，交由上层按设备离线策略处理（暂存重投等）。
-     * 若恰在通道所属 EventLoop 线程上调用则退化为异步等待（仅记录失败日志），避免 Netty 死锁。</p>
+     * <p>同步等待写操作完成（有界超时），以区分「确定送达 / 确定未送达 / 状态未知」：</p>
+     * <ul>
+     *   <li>设备离线、通道不可写、写 future 明确失败 → {@link DeliveryResult#NOT_DELIVERED}，可安全重投；</li>
+     *   <li>等待超时、线程被中断、在 EventLoop 线程上无法等待 → {@link DeliveryResult#UNKNOWN}，
+     *       数据可能已写出，<b>调用方不得重投</b>，否则设备可能重复执行同一条指令；</li>
+     *   <li>写 future 成功完成 → {@link DeliveryResult#DELIVERED}。</li>
+     * </ul>
+     *
+     * <p>若恰在通道所属 EventLoop 线程上调用则退化为异步等待（避免 Netty 死锁），此时无法确认结果，
+     * 返回 {@link DeliveryResult#UNKNOWN}。</p>
      *
      * @param protocolType 协议类型
      * @param deviceId     设备标识
      * @param data         待写入字节
-     * @return 成功投递返回 {@code true}；设备离线、写入失败或超时返回 {@code false}
+     * @return 三态送达结果，永不为 {@code null}
      */
-    public boolean sendToDevice(String protocolType, String deviceId, byte[] data) {
+    public DeliveryResult sendToDevice(String protocolType, String deviceId, byte[] data) {
         Channel channel = deviceChannels.get(SessionKey.of(protocolType, deviceId));
         if (channel == null || !channel.isActive()) {
-            log.warn("设备离线，下行丢弃 protocol={} deviceId={}", SessionKey.of(protocolType, deviceId)
+            log.warn("设备离线，下行未送达 protocol={} deviceId={}", SessionKey.of(protocolType, deviceId)
                     .getProtocolType(), deviceId);
-            return false;
+            return DeliveryResult.NOT_DELIVERED;
         }
         if (!channel.isWritable()) {
             // 出站缓冲超过高水位（慢设备/弱网）：继续写入会让内存持续膨胀，按「未送达」处理走离线暂存
             log.warn("通道写缓冲已满，下行暂缓 protocol={} deviceId={}", SessionKey.of(protocolType, deviceId)
                     .getProtocolType(), deviceId);
-            return false;
+            return DeliveryResult.NOT_DELIVERED;
         }
         // 包装为 ByteBuf 直接进入出站流水线，writeAndFlush 完成后由 Netty 负责释放
         ByteBuf buf = Unpooled.wrappedBuffer(data);
         ChannelFuture future = channel.writeAndFlush(buf);
         if (channel.eventLoop().inEventLoop()) {
             listenQuietly(future, protocolType, deviceId);
-            return true;
+            // 在 EventLoop 线程上不能阻塞等待：写已提交但结果未知，交由调用方按 UNKNOWN 处理
+            return DeliveryResult.UNKNOWN;
         }
         try {
             boolean done = future.await(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             if (!done) {
-                log.warn("下行写入等待超时(可能发送缓慢) protocol={} deviceId={} timeoutMs={}", protocolType,
+                // 超时 ≠ 未写出：数据可能已在发送队列中，判定为 UNKNOWN 以避免上游重投造成重复执行
+                log.warn("下行写入等待超时，送达状态未知 protocol={} deviceId={} timeoutMs={}", protocolType,
                         deviceId, WRITE_TIMEOUT_MS);
-                return false;
+                return DeliveryResult.UNKNOWN;
             }
-            return future.isSuccess();
+            if (!future.isSuccess()) {
+                log.warn("下行写入失败 protocol={} deviceId={}", protocolType, deviceId, future.cause());
+                return DeliveryResult.NOT_DELIVERED;
+            }
+            return DeliveryResult.DELIVERED;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            log.warn("下行写入等待被中断 protocol={} deviceId={}", protocolType, deviceId);
-            return false;
+            log.warn("下行写入等待被中断，送达状态未知 protocol={} deviceId={}", protocolType, deviceId);
+            return DeliveryResult.UNKNOWN;
         }
     }
 

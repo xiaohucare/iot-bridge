@@ -9,6 +9,7 @@ import com.iotbridge.bridge.core.reflow.DownlinkReflowService;
 import com.iotbridge.bridge.core.registry.ProtocolCodecRegistry;
 import com.iotbridge.mq.api.UplinkProducer;
 import com.iotbridge.spi.codec.ProtocolCodec;
+import com.iotbridge.spi.session.DeliveryResult;
 import com.iotbridge.spi.model.DownlinkCommand;
 import com.iotbridge.spi.model.UplinkMessage;
 import io.netty.channel.Channel;
@@ -81,7 +82,7 @@ class UplinkDispatcherTest {
         when(registry.getDefault()).thenReturn(codec);
         when(registry.resolve(any())).thenReturn(codec);
         ChannelManager channelManager = mock(ChannelManager.class);
-        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(Boolean.TRUE);
+        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(DeliveryResult.DELIVERED);
         UplinkProducer producer = mock(UplinkProducer.class);
         Channel channel = mock(Channel.class);
 

@@ -16,8 +16,11 @@ public class MqttProperties {
 
     /**
      * 是否启用 MQTT 接入。
+     *
+     * <p><b>默认关闭</b>：MQTT 是额外的公网监听面（1883 明文），不应在未确认部署需求时默认对外暴露。
+     * 需要启用时显式配置 {@code iotbridge.mqtt.enabled=true}，并同时配置接入用户名/密码。</p>
      */
-    private Boolean enabled = Boolean.TRUE;
+    private Boolean enabled = Boolean.FALSE;
 
     /**
      * 监听地址。

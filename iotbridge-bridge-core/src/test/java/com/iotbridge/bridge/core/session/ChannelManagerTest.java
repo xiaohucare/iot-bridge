@@ -1,6 +1,7 @@
 package com.iotbridge.bridge.core.session;
 
 import com.iotbridge.access.netty.session.ChannelManager;
+import com.iotbridge.spi.session.DeliveryResult;
 import com.iotbridge.spi.session.SessionKey;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelId;
@@ -57,8 +58,8 @@ class ChannelManagerTest {
 
         assertTrue(manager.isOnline("sos-c02", "dev001"));
         assertEquals(1, manager.onlineCount());
-        boolean delivered = manager.sendToDevice("sos-c02", "dev001", "hi".getBytes(StandardCharsets.UTF_8));
-        assertTrue(delivered);
+        DeliveryResult delivered = manager.sendToDevice("sos-c02", "dev001", "hi".getBytes(StandardCharsets.UTF_8));
+        assertEquals(DeliveryResult.DELIVERED, delivered);
         verify(channel).writeAndFlush(any());
     }
 
@@ -75,22 +76,24 @@ class ChannelManagerTest {
     }
 
     @Test
-    void sendToDeviceWhenNotWritableShouldReturnFalseAndSkipWrite() {
+    void sendToDeviceWhenNotWritableShouldReturnNotDeliveredAndSkipWrite() {
         ChannelManager manager = new ChannelManager();
         Channel channel = newChannel("chan-full");
         // 出站缓冲超过高水位：按未送达处理，交由上层离线暂存，避免内存膨胀
         when(channel.isWritable()).thenReturn(Boolean.FALSE);
 
         manager.register("sos-c02", "devFull", channel);
-        assertFalse(manager.sendToDevice("sos-c02", "devFull", "x".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(DeliveryResult.NOT_DELIVERED,
+                manager.sendToDevice("sos-c02", "devFull", "x".getBytes(StandardCharsets.UTF_8)));
         verify(channel, never()).writeAndFlush(any());
     }
 
     @Test
-    void sendToDeviceOfflineShouldReturnFalse() {
+    void sendToDeviceOfflineShouldReturnNotDelivered() {
         ChannelManager manager = new ChannelManager();
 
-        assertFalse(manager.sendToDevice("sos-c02", "ghost", "x".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(DeliveryResult.NOT_DELIVERED,
+                manager.sendToDevice("sos-c02", "ghost", "x".getBytes(StandardCharsets.UTF_8)));
     }
 
     @Test

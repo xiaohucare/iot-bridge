@@ -104,7 +104,7 @@ class MqttServerTest {
         assertEquals(uplinkJson, new String(event.getFrame(), StandardCharsets.UTF_8));
 
         byte[] downlink = "{\"command\":\"setInterval\"}".getBytes(StandardCharsets.UTF_8);
-        assertTrue(channelManager.sendToDevice(properties.getProtocolType(), DEVICE_ID, downlink),
+        assertTrue(channelManager.sendToDevice(properties.getProtocolType(), DEVICE_ID, downlink).isDelivered(),
                 "下行写入应成功");
         Incoming publish = await(incoming, MqttMessageType.PUBLISH);
         assertEquals("iotbridge/downlink/" + DEVICE_ID, publish.topic());

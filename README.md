@@ -33,13 +33,15 @@
 
 - **协议插件化**：实现 `ProtocolCodec` SPI + `META-INF/services` 注册，网关启动自动发现，按 `protocolType` 路由；启动时校验默认协议与各监听绑定的协议均已注册，配置写错直接启动失败。
 - **全双工转发**：上行 TCP/MQTT→Kafka，下行 REST→RabbitMQ→TCP/MQTT，链路解耦、可独立伸缩。
-- **MQTT 接入**：内置 MQTT 3.1.1 服务端，设备以 clientId 作设备号，上行 PUBLISH 与 TCP 设备共用解码/投递链路，下行指令发布到 `iotbridge/downlink/<clientId>`（QoS0/1，支持用户名密码鉴权与 keepalive 空闲检测）。
+- **MQTT 接入（默认关闭）**：内置 MQTT 3.1.1 服务端，需显式 `iotbridge.mqtt.enabled=true` 才绑定端口；设备以 clientId 作设备号，上行 PUBLISH 与 TCP 设备共用解码/投递链路，下行指令发布到 `iotbridge/downlink/<clientId>`（QoS0/1，支持用户名密码鉴权与 keepalive 空闲检测）。
 - **文本/二进制并存**：Netty 帧切分支持行分隔（`DELIMITER`）与长度字段（`LENGTH_FIELD`）两种模式，可通过配置切换。
 - **上行不占 IO 线程**：入站回调仅投递任务，解码/会话登记/Kafka 投递在按连接哈希分片的有界工作线程池执行，Kafka 抖动不会拖垮 Netty EventLoop。
 - **会话管理**：`ChannelManager` 维护 `(protocolType, deviceId) <-> Channel` 双向映射，会话按「协议 + 设备号」复合键寻址，支持设备上下线清理与按设备寻址下发；不同协议下的相同 `deviceId` 各自独立，互不覆盖。
 - **连接活性检测**：读空闲超时自动断链，清理设备断电/NAT 超时留下的半开连接，避免 `isActive()` 长期为真造成在线误报。
 - **离线暂存重投（可选）**：开启后设备离线期间的下行按 `(protocolType, deviceId)` 暂存**原始指令**（有界 + TTL），设备重新上线后按会话串行、重新编码再补发（规避时间戳类指令失效、发送失败退回剩余帧），降低离线丢包。
-- **REST 鉴权**：可配置 API Key（`X-Api-Key` / `Authorization: Bearer`），常量时间比较；未配置时启动告警。
+- **下行三态投递与幂等**：写入结果区分「已送达 / 未送达 / 状态未知」，写等待超时不再误判为失败而重投（避免设备把同一条指令执行两次）；同一 `(protocolType, deviceId, requestId)` 已确认送达过的指令自动去重；REST 支持 `Idempotency-Key`，重复提交只投放一次。
+- **可观测性**：暴露 `/actuator/health`（含 liveness/readiness 探针）与 `/actuator/prometheus` 指标（上行帧、丢帧、下行结果、在线会话、暂存待发、补发结果）；日志模板含 `traceId`/`deviceId`/`requestId` 并按大小滚动落盘。
+- **REST 鉴权**：可配置 API Key（`X-Api-Key` / `Authorization: Bearer`），常量时间比较；未配置时开发环境告警，`prod` profile 下**拒绝启动**。
 - **优雅生命周期**：`GatewayLifecycle`（`SmartLifecycle`）随 Spring 容器自动启停全部接入服务端（TCP、MQTT）。
 
 ## 2. 技术栈
@@ -232,6 +234,11 @@ REST 统一返回 `Result<T>`：`{ "success": bool, "code": string, "message": s
 { "success": true, "code": "0", "message": "成功", "data": "0b1c2d3e-...." }
 ```
 
+**可选请求头 `Idempotency-Key`**（8–128 位字母、数字或 `_ . : -`）：同一设备 + 同一幂等键在
+`iotbridge.admin.idempotency-ttl-ms` 窗口内重复提交，直接返回首次的 `requestId` 且**不再重复投放**；
+建议为「同一业务动作」生成一次，超时重试时复用。网关侧另有 `(protocolType, deviceId, requestId)`
+投递级去重（`iotbridge.downlink.idempotency-*`），两道防线共同避免设备重复执行。
+
 ### 6.2 在线设备查询
 
 用于排查“设备是否在线”（下行未送达通常因设备离线）：
@@ -308,7 +315,7 @@ iotbridge:
 ```yaml
 iotbridge:
   mqtt:
-    enabled: true                 # false 时完全不绑定端口
+    enabled: false                # 默认关闭；true 才绑定端口（公网监听面，启用前先配鉴权）
     host: 0.0.0.0
     port: 1883
     protocol-type: mqtt           # 会话键与下行指令的 protocolType 均使用该值
@@ -471,8 +478,8 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 | `iotbridge.netty.listeners[]` | 多协议监听（每项 `name`/`host`/`port`/`protocol-type`/`frame-mode`/长度字段参，未填继承全局）；为空则合成单监听 | 空（用扁平字段） |
 | `iotbridge.uplink.worker-threads` | 上行处理分片数（按连接哈希固定分片，同连接帧有序；不占 Netty IO 线程） | 4 |
 | `iotbridge.uplink.queue-capacity` | 上行待处理帧总队列容量，溢出丢弃并采样告警（背压保护） | 10000 |
-| `iotbridge.admin.api-key` | REST 鉴权 API Key（`X-Api-Key` / `Authorization: Bearer`）；为空关闭鉴权并启动告警 | 空 |
-| `iotbridge.mqtt.enabled` | 是否启用 MQTT 3.1.1 接入（false 不绑定端口） | true |
+| `iotbridge.admin.api-key` | REST 鉴权 API Key（`X-Api-Key` / `Authorization: Bearer`）；为空时开发环境仅告警，`prod` profile 下**拒绝启动** | 空 |
+| `iotbridge.mqtt.enabled` | 是否启用 MQTT 3.1.1 接入（false 不绑定端口） | **false** |
 | `iotbridge.mqtt.host` / `port` | MQTT 监听地址/端口 | 0.0.0.0 / 1883 |
 | `iotbridge.mqtt.protocol-type` | MQTT 会话与下行指令使用的协议标识 | mqtt |
 | `iotbridge.mqtt.max-message-size` | 单条 MQTT 报文上限（字节） | 65536 |
@@ -495,11 +502,20 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 | `iotbridge.downlink.max-pending-devices` | 同时暂存的最大设备数（超限淘汰最陈旧设备队列） | 10000 |
 | `iotbridge.downlink.pending-ttl-ms` | 暂存指令存活毫秒（`<=0` 不过期） | 300000 |
 | `iotbridge.downlink.reflow-threads` | 补发线程数（不同设备并行补发，同设备由分段锁串行） | 4 |
+| `iotbridge.downlink.reflow-queue-capacity` | 补发任务队列容量（有界，满则拒绝并计数，形成背压） | 1024 |
+| `iotbridge.downlink.idempotency-enabled` | 下行投递幂等去重（同协议+设备+requestId 只投递一次） | true |
+| `iotbridge.downlink.idempotency-ttl-ms` | 去重记录存活毫秒（`<=0` 不过期） | 600000 |
+| `iotbridge.downlink.idempotency-max-entries` | 去重记录条数上限（超限先清过期，仍超则拒绝并告警） | 100000 |
+| `iotbridge.admin.idempotency-ttl-ms` | REST `Idempotency-Key` 记忆窗口（毫秒） | 600000 |
+| `iotbridge.admin.idempotency-max-entries` | REST 幂等键记忆条数上限 | 50000 |
 | `spring.kafka.bootstrap-servers` | Kafka 地址 | localhost:9092 |
 | `spring.kafka.producer.*` | Kafka 生产者可靠性参数（默认 `acks=all` + 幂等生产者，重试 10 次）；为生产者唯一配置来源，代码不再硬编码 | 见 application.yml |
 | `spring.rabbitmq.host` / `port` / `username` / `password` | RabbitMQ 连接 | localhost:5672 / guest / guest |
 | `spring.rabbitmq.publisher-confirm-type` / `publisher-returns` | 发布确认与不可路由退回（已启用 correlated） | correlated / true |
 | `spring.rabbitmq.listener.simple.acknowledge-mode` | 消费确认（manual：处理成功 ack，毒消息 nack 转 `<下行队列>.dlq` 死信队列） | manual |
+| `management.endpoints.web.exposure.include` | 暴露的 actuator 端点（健康检查与 Prometheus 指标） | health,info,prometheus,metrics |
+| `management.endpoint.health.probes.enabled` | 开启 `/actuator/health/liveness`、`/readiness` 探针 | true |
+| `logging.config` | 日志配置文件（模板含 traceId/deviceId/requestId，控制台 + 滚动文件） | logback-spring.xml |
 
 ## 11. 扩展新协议
 
@@ -524,10 +540,11 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 mvn test
 ```
 
-共 **81** 个用例，全部通过：
+共 **101** 个用例，全部通过：
 
 | 模块 | 测试类 | 数量 | 覆盖 |
 | --- | --- | --- | --- |
+| common | `BoundedTtlCacheTest` | 7 | 读写、TTL 过期、容量上限拒绝、过期腾挪 |
 | plugin-demo | `DemoTextCodecTest` | 3 | 编解码往返、ServiceLoader 发现 |
 | plugin-sos | `Crc16XmodemTest` | 2 | CRC16-XMODEM 标准向量 |
 | plugin-sos | `SosProtocolCodecTest` | 9 | 各命令解码、编码回解析自洽、篡改 CRC 必失败、ServiceLoader 发现 |
@@ -539,10 +556,13 @@ mvn test
 | bridge-core | `ProtocolCodecRegistryTest` | 3 | 插件加载与回退解析 |
 | bridge-core | `ChannelManagerTest` | 9 | 会话注册/覆盖/下线/协议隔离/重复上线踢旧连接/设备索引/写缓冲满拒绝写入 |
 | bridge-core | `DownlinkBufferTest` | 10 | 暂存/补发/容量/TTL/超期定时清理/协议隔离 |
-| bridge-core | `DownlinkDispatcherTest` | 5 | 离线暂存、双检补发、毒消息吞掉 |
-| bridge-core | `DownlinkReflowServiceTest` | 5 | 按序补发、失败退回、编码失败跳过 |
+| bridge-core | `DownlinkDispatcherTest` | 7 | 离线暂存、双检补发、毒消息吞掉；状态未知不暂存、重复 requestId 跳过 |
+| bridge-core | `DownlinkReflowServiceTest` | 7 | 按序补发、失败退回、编码失败跳过；状态未知只退后续帧、无待发不提交任务 |
 | bridge-core | `UplinkDispatcherTest` | 3 | 端口协议绑定、上线补发 |
 | bridge-core | `DeviceSessionQueryAdapterTest` | 3 | 在线查询适配 |
+| bridge-core | `BridgeMetricsTest` | 2 | 指标计数与 gauge 注册、NOOP 降级 |
+| admin | `CommandControllerTest` | 3 | 正常投放、幂等键只投放一次、非法幂等键 400 |
+| starter | `ProductionSecurityGuardTest` | 4 | prod 缺 api-key/MQTT 匿名拒绝启动、开发环境放行 |
 
 ## 13. 工程结构
 
@@ -573,12 +593,15 @@ iot-bridge/
 - **下行协议路由**：下行按 `DownlinkCommand.protocolType` 经 `resolve()` 选择插件，为空回退默认。
 - **多实例下行路由**：单实例用 `direct` 交换机 + 固定路由键；多实例必须设置 `downlink-exchange-type=consistent-hash`，以 `deviceId` 作路由键、每实例队列独立（`<queue>.<instance-id>`），设备指令恒定命中同一实例队列，避免直连交换机「同键多队列 = 广播」导致的重复下发与随机错投。一致哈希依赖 RabbitMQ `rabbitmq_consistent_hash_exchange` 插件（3.8+ 随镜像提供，需启用）。
 - **会话隔离**：设备会话（在线注册、下行投递、离线暂存与补发）统一以 `SessionKey`（`protocolType` + `deviceId`）为复合键，不同协议下的相同 `deviceId` 各自独立、互不覆盖；`ChannelManager` 快照按协议、设备号升序输出，运维查在线可跨协议聚合或按 `protocol` 精确判定。
-- **可靠性**：上行 Kafka 生产者 `acks=all` + 幂等生产者（重试不重复），参数统一经 `spring.kafka.producer.*` 配置；下行 RabbitMQ 发布端同步等待 broker confirm（nack/超时即向 REST 返回 503 + `B0300`），消费端手动 ack，处理异常与毒消息经死信参数转入 `<下行队列>.dlq`；下行写通道同步等待真实发送结果（有界超时），写失败或缓冲超水位按设备离线策略处理。
+- **可靠性**：上行 Kafka 生产者 `acks=all` + 幂等生产者（重试不重复），参数统一经 `spring.kafka.producer.*` 配置；下行 RabbitMQ 发布端同步等待 broker confirm（nack/超时即向 REST 返回 503 + `B0300`），消费端手动 ack，处理异常与毒消息经死信参数转入 `<下行队列>.dlq`；下行写通道同步等待真实发送结果（有界超时），并按**三态**返回：`DELIVERED` 确认送达；`NOT_DELIVERED`（离线/不可写/写失败）才允许暂存重投；`UNKNOWN`（等待超时、线程中断）表示数据可能已写出，**不重投**，只计数告警，避免设备重复执行。
 - **在线判定即写即发（可选缓冲重投）**：设备离线时默认丢弃并告警；开启 `iotbridge.downlink.buffer-enabled` 后按 `(protocolType, deviceId)` 暂存**原始下行指令**（有界 + TTL），设备重新上线（收到上行）时由 `DownlinkReflowService` 在独立补发线程池（不占 Netty IO 线程，不同设备并行、同会话分段锁串行）**以当前指令重新编码后**按序补发（规避 `timeCalib` 等含时间戳指令在离线期间失效）；补发中发送失败则中断并把剩余帧按原序退回缓冲，等待下次上线，杜绝静默丢失。超期暂存由后台定时线程周期清理。缓冲仅存于当前实例内存，进程重启清空、多实例不共享。
+- **下行幂等**：投递级按 `(protocolType, deviceId, requestId)` 记忆「已确认送达」，MQ 重投或 REST 重试到达的重复指令直接跳过；REST 侧另有 `Idempotency-Key` 在投放前拦截重复提交（记忆在 broker confirm 成功后写入，失败可安全重试）。两处记录均用有界 TTL 缓存（过期先清理，超限拒绝并计数），内存不会无界增长。
+- **可观测性**：`/actuator/health`（liveness/readiness）+ `/actuator/prometheus`；核心指标见 `docs/monitoring/metrics.md`。日志经 `logback-spring.xml` 输出控制台与滚动文件，MDC 携带 `traceId`（REST 请求）/`deviceId`/`protocolType`/`requestId`，可按 requestId 串起「REST 入口 → Rabbit 消费 → 设备写入」。
 - **错误码与 HTTP 状态**：业务异常保留原始 `code`，并按类别映射 400/401/409/503，不再一律 200 + 系统错误。
 - **会话互踢**：同一 `(protocolType, deviceId)` 重复上线时新连接顶替旧连接，旧 TCP 连接被主动关闭，防止僵尸连接占用资源。
-- **安全**：REST 提供 API Key 鉴权（`iotbridge.admin.api-key`，`X-Api-Key` 或 `Authorization: Bearer`，常量时间比较），生产环境请同时通过 `server.ssl.*` 为 REST 开启 TLS；MQTT 可选用户名密码鉴权（`iotbridge.mqtt.username/password`，同样常量时间比较）；设备接入侧 TCP（9000/9001）与 MQTT（1883）均为明文，如需链路加密需在设备与网关之间加 TLS 终结或专用安全网关（MQTT TLS 常用 8883）。
-- **未包含**：设备级鉴权（设备注册白名单/证书）、指令幂等与应答确认闭环、设备影子持久化、集群化会话共享（跨实例会话仍各自持有，多实例需配合一致哈希路由）、指标监控、MQTT retained/Will/QoS2 等——接口位已预留，可迭代增强。
+- **安全**：REST 提供 API Key 鉴权（`iotbridge.admin.api-key`，`X-Api-Key` 或 `Authorization: Bearer`，常量时间比较）；`prod` profile 下 api-key 为空或 MQTT 启用却未配 username 时**启动直接失败**（`ProductionSecurityGuard`）。MQTT 接入**默认关闭**，启用需显式配置并建议先配用户名/密码。设备接入侧 TCP（9000/9001）与 MQTT（1883）均为明文，如需链路加密需在设备与网关之间加 TLS 终结或专用安全网关（MQTT TLS 常用 8883）。
+- **仍待完善（安全）**：设备侧没有接入身份认证，TCP 协议内 `deviceId` 由帧内容提供，任何知道设备号的一方都能顶替该会话并接收其下行；上线前应补设备注册/密钥校验与白名单，详见 `docs/design-review-2026-11-14.md` P0-1。
+- **未包含**：设备级鉴权（设备注册/白名单/证书）、指令**应答**确认闭环（设备 ACK 回传与 `requestId` 状态查询）、设备影子持久化、跨实例会话共享与离线缓冲共享（多实例需配合一致哈希路由）、链路 TLS、MQTT retained/Will/QoS2、TCP 侧最大连接数与速率限制——接口位已预留，可迭代增强。
 - **SOS 样例帧**：因协议文档样例中厂商码/CRC 为占位，测试采用“自造合法帧 + 回解析自洽 + 篡改 CRC 必失败”策略；如有含真实值的完整样例帧，可补充逐字节比对用例。
 
 # 启动：docker compose -f docker/docker-compose.yml up -d

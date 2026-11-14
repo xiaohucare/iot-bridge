@@ -6,7 +6,28 @@
 
 ## [Unreleased]
 
-_开发中的特性会先归集于此。_
+### Added
+
+- **下行三态投递语义**：`DeliveryResult`（`DELIVERED` / `UNKNOWN` / `NOT_DELIVERED`）替代 `ChannelManager.sendToDevice` 的布尔返回。写等待超时/线程中断判定为 `UNKNOWN`——数据可能已写出，**不进入离线暂存、不重投**；只有确定未送达才暂存补发，从根上消除「超时重投」导致的设备重复执行。
+- **下行投递幂等**：`DownlinkIdempotencyCache` 按 `(protocolType, deviceId, requestId)` 记忆已确认送达的指令，MQ 重投/REST 重试产生的重复指令直接跳过并计数；补发前同样校验，避免重复执行。
+- **REST 幂等键**：`POST /api/v1/devices/{deviceId}/commands` 支持 `Idempotency-Key` 请求头（8–128 位字母数字或 `_ . : -`），同设备同键在窗口内重复提交返回首次 `requestId` 且不再投放；记忆在 broker confirm 成功后写入，失败可安全重试。
+- **可观测性**：接入 `spring-boot-starter-actuator` + `micrometer-registry-prometheus`，暴露 `/actuator/health`（含 liveness/readiness 探针）与 `/actuator/prometheus`；新增 `BridgeMetrics` 六类核心指标（上行帧/丢帧、下行结果、在线会话、暂存待发、补发结果），文档见 `docs/monitoring/metrics.md`。
+- **日志链路字段与滚动文件**：新增 `logback-spring.xml`（控制台 + 100MB/30 天/2GB 上限滚动文件）；REST `TraceIdFilter` 生成或透传 `X-Trace-Id` 并回写响应头，上行/下行/补发线程写入 `deviceId`/`protocolType`/`requestId` MDC。
+- **生产安全基线**：`ProductionSecurityGuard` 在 `prod` profile 下校验 `iotbridge.admin.api-key` 非空、MQTT 启用时必须配置 `username`，不满足直接启动失败。
+- **通用有界 TTL 缓存**：`BoundedTtlCache`（过期先清理、超限拒绝并计数），供两处幂等去重使用，内存不会无界增长。
+
+### Changed
+
+- **接口/契约变更**：`ChannelManager.sendToDevice(...)` 返回 `DeliveryResult`（原 `boolean`）；`DownlinkDispatcher` / `DownlinkReflowService` / `UplinkDispatcher` 构造新增幂等缓存与指标参数（保留旧构造重载以兼容既有调用与测试）。
+- **MQTT 接入默认关闭**：`iotbridge.mqtt.enabled` 默认值由 `true` 改为 `false`（`MqttServer`/`MqttPayloadCodec` 的 `matchIfMissing` 同步改为 `false`），避免默认向公网暴露 1883 明文监听面；基线 `application.yml` 显式写为 `false`。
+- **补发线程池有界化**：`reflow` 改用 `ThreadPoolExecutor + ArrayBlockingQueue(reflow-queue-capacity)` + `AbortPolicy`，队列满拒绝并计数；提交前先判断该会话是否有待发指令，同一会话任务以 in-flight 标记去重，避免心跳帧持续堆积空任务。
+- **补发三态处理**：补发遇 `UNKNOWN` 只退回其后帧，当前帧按「至多一次」处理（原实现会连同当前帧一起退回，存在重复执行风险）。
+
+### Docs
+
+- 修正 `CONTRIBUTING.md` 分层图与实际依赖（`bridge-core` 依赖 `mq` 与 `access-netty`，`access-mqtt` 依赖 `access-netty`），并明确 `UplinkFrameListener`（`access-netty.api`）/`UplinkProducer`（`mq.api`）/`spi` 契约的实际位置与已知待改点。
+- README 补充 `Idempotency-Key`、三态与幂等说明、MQTT 默认关闭、新增配置项、计量端点、测试用例数（81 → 101）与 `iotbridge-mq` 自动化缺口。
+- 新增 `docs/monitoring/metrics.md`（指标语义、PromQL、告警建议）；`docs/deployment.md` 增加生产安全基线、健康检查与指标、日志字段与新增排查项。
 
 ## [1.0.0] - 2026-11-05
 

@@ -9,6 +9,7 @@ import com.iotbridge.common.exception.BridgeException;
 import com.iotbridge.common.exception.ErrorCodeEnum;
 import com.iotbridge.spi.codec.ProtocolCodec;
 import com.iotbridge.spi.model.DownlinkCommand;
+import com.iotbridge.spi.session.DeliveryResult;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -16,6 +17,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -60,7 +63,7 @@ class DownlinkDispatcherTest {
     void offlineDownlinkIsBufferedWhenEnabled() {
         ProtocolCodec codec = codecOffline();
         ChannelManager channelManager = mock(ChannelManager.class);
-        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(Boolean.FALSE);
+        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(DeliveryResult.NOT_DELIVERED);
         DownlinkBuffer buffer = buffer(true);
 
         dispatcher(registryReturning(codec), channelManager, buffer)
@@ -73,7 +76,7 @@ class DownlinkDispatcherTest {
     void offlineDownlinkDroppedWhenDisabled() {
         ProtocolCodec codec = codecOffline();
         ChannelManager channelManager = mock(ChannelManager.class);
-        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(Boolean.FALSE);
+        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(DeliveryResult.NOT_DELIVERED);
         DownlinkBuffer buffer = buffer(false);
 
         dispatcher(registryReturning(codec), channelManager, buffer)
@@ -86,7 +89,7 @@ class DownlinkDispatcherTest {
     void onlineDownlinkNotBuffered() {
         ProtocolCodec codec = codecOffline();
         ChannelManager channelManager = mock(ChannelManager.class);
-        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(Boolean.TRUE);
+        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(DeliveryResult.DELIVERED);
         DownlinkBuffer buffer = buffer(true);
 
         dispatcher(registryReturning(codec), channelManager, buffer)
@@ -96,11 +99,42 @@ class DownlinkDispatcherTest {
     }
 
     @Test
+    void unknownDeliveryIsNotBufferedToAvoidDuplicateExecution() {
+        ProtocolCodec codec = codecOffline();
+        ChannelManager channelManager = mock(ChannelManager.class);
+        // 写等待超时：数据可能已写出，判定为 UNKNOWN
+        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(DeliveryResult.UNKNOWN);
+        DownlinkBuffer buffer = buffer(true);
+
+        dispatcher(registryReturning(codec), channelManager, buffer)
+                .handle(new DownlinkCommand("dev1", PT, "restart", null, "req-unknown"));
+
+        // 关键断言：状态未知的指令不得进入暂存，否则设备上线补发会让设备执行两次
+        assertEquals(0, buffer.pendingSize(PT, "dev1"));
+    }
+
+    @Test
+    void duplicateRequestIdAfterDeliveryIsSkipped() {
+        ProtocolCodec codec = codecOffline();
+        ChannelManager channelManager = mock(ChannelManager.class);
+        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(DeliveryResult.DELIVERED);
+        DownlinkBuffer buffer = buffer(false);
+        DownlinkDispatcher dispatcher = dispatcher(registryReturning(codec), channelManager, buffer);
+
+        DownlinkCommand command = new DownlinkCommand("dev1", PT, "restart", null, "req-dup");
+        dispatcher.handle(command);
+        dispatcher.handle(command);
+
+        // 同一 requestId 已确认送达：第二次必须被幂等拦截，不得再次写通道
+        verify(channelManager, times(1)).sendToDevice(anyString(), anyString(), any());
+    }
+
+    @Test
     void offlineThenOnlineDoubleCheckReflowsImmediately() {
         ProtocolCodec codec = codecOffline();
         ChannelManager channelManager = mock(ChannelManager.class);
         // handle 首次发送失败（离线），随后补发重新发送成功
-        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(Boolean.FALSE, Boolean.TRUE);
+        when(channelManager.sendToDevice(anyString(), anyString(), any())).thenReturn(DeliveryResult.NOT_DELIVERED, DeliveryResult.DELIVERED);
         // 暂存后双检发现设备此刻已在线，触发立即补发
         when(channelManager.isOnline(anyString(), anyString())).thenReturn(Boolean.TRUE);
         DownlinkBuffer buffer = buffer(true);

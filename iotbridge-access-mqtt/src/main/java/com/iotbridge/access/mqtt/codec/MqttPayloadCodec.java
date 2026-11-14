@@ -27,7 +27,7 @@ import java.util.Map;
  * @date 2026-11-06
  */
 @Component
-@ConditionalOnProperty(prefix = "iotbridge.mqtt", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "iotbridge.mqtt", name = "enabled", havingValue = "true", matchIfMissing = false)
 public class MqttPayloadCodec implements ProtocolCodec {
 
     private final String protocolType;

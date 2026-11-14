@@ -33,7 +33,7 @@ public class ProtocolStartupValidator implements InitializingBean {
 
     @Autowired
     public ProtocolStartupValidator(ProtocolCodecRegistry codecRegistry, NettyProperties nettyProperties,
-                                    @Value("${iotbridge.mqtt.enabled:true}") boolean mqttEnabled,
+                                    @Value("${iotbridge.mqtt.enabled:false}") boolean mqttEnabled,
                                     @Value("${iotbridge.mqtt.protocol-type:mqtt}") String mqttProtocolType) {
         this.codecRegistry = codecRegistry;
         this.nettyProperties = nettyProperties;
