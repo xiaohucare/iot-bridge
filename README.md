@@ -7,6 +7,15 @@
 - `demo-text`：行文本协议，作为最小可运行示例；
 - `sos-c02`：SOS-C02 / C03B / W03-A / C03-AO 消防设备通信协议 V3.0，二进制帧 + CRC16，适用于燃气/烟感/温感等 GPRS/4G/WIFI 无线终端。
 
+## 关于本项目
+
+**iotbridge** 解决的是「多种私有/行业协议设备 → 统一消息总线」的接入层问题：设备连上来，网关负责解码、校验、投递 Kafka，再把平台指令编码后回写设备；业务平台不必为每种硬件各写一套接入代码，新协议以插件形式新增，不改网关主体。
+
+- **适用场景**：单实例，或多实例按设备号一致哈希分片；协议种类多、单类设备量级中等；上行以 Kafka 为总线、下行以 RabbitMQ 为通道；设备侧可信，或已用注册表白名单/来源 IP 兜底。
+- **暂不适用**：需要跨实例共享会话与离线缓冲、需要强设备身份（mTLS/协议内认证）、需要 MQTT 5.0 / QoS2 / retained / Will、需要链路加密的场景。
+- **项目状态**：0.x 内测阶段，尚未发布正式版本，配置项与接口仍可能调整，变更记录见 [CHANGELOG](CHANGELOG.md)。
+- **许可证**：MIT。
+
 ## 目录
 
 - [1. 特性](#1-特性)
@@ -23,9 +32,11 @@
 - [12. 测试](#12-测试)
 - [13. 工程结构](#13-工程结构)
 - [14. 设计说明与限制](#14-设计说明与限制)
+- [15. 许可证](#15-许可证)
 
 ## 相关文档
 
+- [文档索引](docs/README.md)：按「入门 / 部署 / 扩展 / 评审」分组的全部文档入口。
 - [SOS-C02 V3.0 协议规范](docs/protocol-sos-c02.md)：帧结构、CRC、命令集、数据体字节级布局、上下行编解码细则。
 - [部署与运维手册](docs/deployment.md)：环境、构建、配置、启动、接口调用、故障排查。
 
@@ -609,7 +620,6 @@ iot-bridge/
 - **未包含**：设备侧 mTLS/证书认证（当前为注册表白名单 + IP 绑定）、指令**应答**确认闭环（设备 ACK 回传与 `requestId` 状态查询）、设备影子持久化、跨实例会话共享与离线缓冲共享（多实例需配合一致哈希路由）、链路 TLS、MQTT retained/Will/QoS2、TCP 侧最大连接数与速率限制——接口位已预留，可迭代增强。
 - **SOS 样例帧**：因协议文档样例中厂商码/CRC 为占位，测试采用“自造合法帧 + 回解析自洽 + 篡改 CRC 必失败”策略；如有含真实值的完整样例帧，可补充逐字节比对用例。
 
-# 启动：docker compose -f docker/docker-compose.yml up -d
-# 重启：docker compose -f docker/docker-compose.yml stop && docker compose -f docker/docker-compose.yml up -d
-# 停止：docker compose -f docker/docker-compose.yml stop
-# 彻底清理：docker compose -f docker/docker-compose.yml down
+## 15. 许可证
+
+本项目采用 [MIT 许可证](LICENSE)：可商用、可修改、可再分发，需保留版权与许可声明。

@@ -32,6 +32,9 @@
 
 ### Docs
 
+- README 新增「关于本项目」块（定位、适用/暂不适用、项目状态、许可证），并补 §15 许可证章节；清理文末与 §4 重复的 docker 命令片段。
+- 新增 `docs/README.md` 文档索引，按「想跑起来 / 想部署 / 想接新协议 / 想了解设计不足 / 历史变更」分流全部文档，并写明文档同步维护约定。
+
 - 修正 `CONTRIBUTING.md` 分层图与实际依赖（`bridge-core` 依赖 `mq` 与 `access-netty`，`access-mqtt` 依赖 `access-netty`），并明确 `UplinkFrameListener`（`access-netty.api`）/`UplinkProducer`（`mq.api`）/`spi` 契约的实际位置与已知待改点。
 - README 补充 `Idempotency-Key`、三态与幂等说明、MQTT 默认关闭、新增配置项、计量端点、测试用例数（81 → 101）与 `iotbridge-mq` 自动化缺口。
 - 新增 `docs/monitoring/metrics.md`（指标语义、PromQL、告警建议）；`docs/deployment.md` 增加生产安全基线、设备接入认证（含灰度步骤与 TCP 身份边界）、健康检查与指标、日志字段与新增排查项。
