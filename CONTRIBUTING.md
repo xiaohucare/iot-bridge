@@ -56,7 +56,8 @@ common
 - `access-netty` / `access-mqtt` / `mq` **不得反向依赖** `bridge-core`、`admin`。
 - 上行由接入层回调 `UplinkFrameListener` / `UplinkFrameEvent`（位于 `access-netty` 的 `api` 包，因需持有 Netty `Channel` 而不放入 `spi`）；
   下行由 `mq` 通过 `spi` 的 `DownlinkDispatchHandler` 向下回调；上行/下行投递的中间件契约 `UplinkProducer` / `DownlinkPublisher` 位于 `mq.api`。
-- 传输无关的对外契约统一放在 `spi`：编解码 `ProtocolCodec`、消息模型、会话查询 `DeviceSessionQuery` / `DeviceSessionView` / `SessionKey`、投递结果 `DeliveryResult`。
+- 传输无关的对外契约统一放在 `spi`：编解码 `ProtocolCodec`、消息模型、会话查询 `DeviceSessionQuery` / `DeviceSessionView` / `SessionKey`、投递结果 `DeliveryResult`、设备认证 `DeviceAuthenticator` / `DeviceCredential` / `DeviceAuthResult`。
+- 新增接入方式时**必须**在会话登记前调用 `DeviceAuthenticator`，并遵守「未通过且在强制模式下不得登记会话」——否则设备会绕过认证直接进入下行寻址表。
 - **已知待改点**：`bridge-core` 目前直接依赖 `access-netty` 的 `ChannelManager`（Netty `Channel` 语义），新增加第三种接入方式前应把「会话注册 + 下行写入」抽象上移到 `spi`（见 `docs/design-review-2026-11-14.md` P1-8），不要在新模块里再复制一份 `ChannelManager`。
 - 新增协议：实现 `ProtocolCodec` 并在 `META-INF/services` 注册，无需改动网关主干。
 

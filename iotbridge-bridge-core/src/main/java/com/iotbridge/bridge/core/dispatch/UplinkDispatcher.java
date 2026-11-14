@@ -10,6 +10,9 @@ import com.iotbridge.bridge.core.reflow.DownlinkReflowService;
 import com.iotbridge.mq.api.UplinkProducer;
 import com.iotbridge.spi.codec.ProtocolCodec;
 import com.iotbridge.spi.model.UplinkMessage;
+import com.iotbridge.spi.security.DeviceAuthResult;
+import com.iotbridge.spi.security.DeviceAuthenticator;
+import com.iotbridge.spi.security.DeviceCredential;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,6 +57,7 @@ public class UplinkDispatcher implements UplinkFrameListener {
     private final UplinkProducer uplinkProducer;
     private final DownlinkReflowService downlinkReflowService;
     private final BridgeMetrics metrics;
+    private final DeviceAuthenticator deviceAuthenticator;
 
     /**
      * 上行工作分片，每个分片一个单线程执行器；为空表示未启用（仅测试使用同步执行器场景）。
@@ -75,9 +79,27 @@ public class UplinkDispatcher implements UplinkFrameListener {
     @Autowired
     public UplinkDispatcher(ProtocolCodecRegistry codecRegistry, ChannelManager channelManager,
                             UplinkProducer uplinkProducer, DownlinkReflowService downlinkReflowService,
+                            UplinkProperties uplinkProperties, BridgeMetrics metrics,
+                            DeviceAuthenticator deviceAuthenticator) {
+        this(codecRegistry, channelManager, uplinkProducer, downlinkReflowService,
+                newWorkers(uplinkProperties), true, metrics, deviceAuthenticator);
+    }
+
+    /**
+     * Spring 注入用构造（未引入认证模块时按放行处理）。
+     *
+     * @param codecRegistry         协议注册表
+     * @param channelManager        会话管理
+     * @param uplinkProducer        上行生产者
+     * @param downlinkReflowService 补发服务
+     * @param uplinkProperties      上行线程池配置
+     * @param metrics               指标
+     */
+    public UplinkDispatcher(ProtocolCodecRegistry codecRegistry, ChannelManager channelManager,
+                            UplinkProducer uplinkProducer, DownlinkReflowService downlinkReflowService,
                             UplinkProperties uplinkProperties, BridgeMetrics metrics) {
         this(codecRegistry, channelManager, uplinkProducer, downlinkReflowService,
-                newWorkers(uplinkProperties), true, metrics);
+                newWorkers(uplinkProperties), true, metrics, DeviceAuthenticator.ALLOW_ALL);
     }
 
     /**
@@ -109,12 +131,30 @@ public class UplinkDispatcher implements UplinkFrameListener {
                             UplinkProducer uplinkProducer, DownlinkReflowService downlinkReflowService,
                             Executor executor) {
         this(codecRegistry, channelManager, uplinkProducer, downlinkReflowService,
-                new Executor[]{executor}, false, BridgeMetrics.NOOP);
+                new Executor[]{executor}, false, BridgeMetrics.NOOP, DeviceAuthenticator.ALLOW_ALL);
+    }
+
+    /**
+     * 以同步执行器 + 指定认证器构造（测试用）。
+     *
+     * @param codecRegistry        协议注册表
+     * @param channelManager       会话管理
+     * @param uplinkProducer       上行生产者
+     * @param downlinkReflowService 补发服务
+     * @param executor             同步执行器
+     * @param deviceAuthenticator  设备认证器
+     */
+    public UplinkDispatcher(ProtocolCodecRegistry codecRegistry, ChannelManager channelManager,
+                            UplinkProducer uplinkProducer, DownlinkReflowService downlinkReflowService,
+                            Executor executor, DeviceAuthenticator deviceAuthenticator) {
+        this(codecRegistry, channelManager, uplinkProducer, downlinkReflowService,
+                new Executor[]{executor}, false, BridgeMetrics.NOOP, deviceAuthenticator);
     }
 
     private UplinkDispatcher(ProtocolCodecRegistry codecRegistry, ChannelManager channelManager,
                              UplinkProducer uplinkProducer, DownlinkReflowService downlinkReflowService,
-                             Executor[] workers, boolean ownsWorkers, BridgeMetrics metrics) {
+                             Executor[] workers, boolean ownsWorkers, BridgeMetrics metrics,
+                             DeviceAuthenticator deviceAuthenticator) {
         this.codecRegistry = codecRegistry;
         this.channelManager = channelManager;
         this.uplinkProducer = uplinkProducer;
@@ -122,6 +162,7 @@ public class UplinkDispatcher implements UplinkFrameListener {
         this.workers = workers;
         this.ownsWorkers = ownsWorkers;
         this.metrics = metrics;
+        this.deviceAuthenticator = deviceAuthenticator;
     }
 
     /**
@@ -196,6 +237,10 @@ public class UplinkDispatcher implements UplinkFrameListener {
             // 把设备与协议写入 MDC，使解码失败日志也能定位到具体设备/协议
             MDC.put("deviceId", deviceId);
             MDC.put("protocolType", protocolType == null ? "" : protocolType);
+            // 接入认证：先验身份再登记会话，未通过的设备不进入 ChannelManager（否则可被下行寻址）
+            if (!authorize(protocolType, deviceId, event)) {
+                return;
+            }
             // 绑定协议+设备与通道，供下行按 (protocol,deviceId) 寻址（不同协议相同设备号不互覆）
             channelManager.register(message.getProtocolType(), deviceId, event.getChannel());
             if (log.isDebugEnabled()) {
@@ -214,6 +259,43 @@ public class UplinkDispatcher implements UplinkFrameListener {
             MDC.remove("deviceId");
             MDC.remove("protocolType");
         }
+    }
+
+    /**
+     * 校验设备接入身份，并按强制/观察模式决定是否放行。
+     *
+     * <p>TCP 侧没有协议内凭据，这里只带来源地址；若网关前置 mTLS，可在
+     * {@link UplinkFrameEvent} 上补充证书指纹后传入（当前实现预留该入参）。</p>
+     *
+     * @param protocolType 协议类型
+     * @param deviceId     设备号
+     * @param event        上行帧事件（提供来源地址与通道）
+     * @return 放行为 {@code true}；强制模式下未通过则关闭连接并返回 {@code false}
+     */
+    private boolean authorize(String protocolType, String deviceId, UplinkFrameEvent event) {
+        DeviceAuthResult result;
+        try {
+            result = deviceAuthenticator.authenticate(DeviceCredential.addressOnly(protocolType, deviceId,
+                    event.getRemoteAddress()));
+        } catch (RuntimeException ex) {
+            // 认证器自身异常不能变成“放行”，按不通过处理
+            log.error("设备接入认证异常，按未通过处理 protocol={} deviceId={}", protocolType, deviceId, ex);
+            result = DeviceAuthResult.BAD_CREDENTIAL;
+        }
+        if (result.isAllowed()) {
+            return true;
+        }
+        if (deviceAuthenticator.isEnforcing()) {
+            log.warn("设备接入被拒绝 protocol={} deviceId={} remote={} result={}（强制模式，关闭连接）",
+                    protocolType, deviceId, event.getRemoteAddress(), result.tag());
+            if (event.getChannel() != null) {
+                event.getChannel().close();
+            }
+            return false;
+        }
+        log.warn("设备未通过接入认证但当前为观察模式，已放行 protocol={} deviceId={} remote={} result={}",
+                protocolType, deviceId, event.getRemoteAddress(), result.tag());
+        return true;
     }
 
     /**

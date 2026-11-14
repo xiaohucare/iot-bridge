@@ -19,6 +19,20 @@ import static org.mockito.Mockito.when;
 class BridgeMetricsTest {
 
     @Test
+    void nullRegistryDegradesToNoopWithoutFailing() {
+        // 精简部署（无 actuator）不应因缺少 MeterRegistry 而启动失败
+        BridgeMetrics metrics = new BridgeMetrics((io.micrometer.core.instrument.MeterRegistry) null, org.mockito.Mockito.mock(
+                com.iotbridge.spi.session.DeviceSessionQuery.class),
+                org.mockito.Mockito.mock(com.iotbridge.bridge.core.buffer.DownlinkBuffer.class));
+
+        metrics.uplinkFrame("sos-c02", BridgeMetrics.UPLINK_OK);
+        metrics.uplinkDropped();
+        metrics.downlink(BridgeMetrics.DOWNLINK_DELIVERED);
+        metrics.reflow(BridgeMetrics.REFLOW_SENT);
+        metrics.securityAuth("sos-c02", "allowed");
+    }
+
+    @Test
     void countersAndGaugesAreRegistered() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         DeviceSessionQuery sessions = mock(DeviceSessionQuery.class);

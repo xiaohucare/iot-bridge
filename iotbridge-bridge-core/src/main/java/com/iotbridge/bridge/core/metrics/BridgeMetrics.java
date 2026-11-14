@@ -7,6 +7,7 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -21,7 +22,9 @@ import org.springframework.stereotype.Component;
  *       （delivered/unknown/buffered/dropped/duplicate/error）；</li>
  *   <li>{@code iotbridge_sessions_active}：当前在线会话数（gauge）；</li>
  *   <li>{@code iotbridge_downlink_buffer_pending}：暂存待补发指令总数（gauge）；</li>
- *   <li>{@code iotbridge_reflow_total{result}}：补发结果（sent/failed/unknown/rejected）。</li>
+ *   <li>{@code iotbridge_reflow_total{result}}：补发结果（sent/failed/unknown/rejected）；</li>
+ *   <li>{@code iotbridge_security_auth_total{protocol,result}}：设备接入认证结果
+ *       （allowed/notConfigured/unknownDevice/disabled/badCredential/networkDenied）。</li>
  * </ul>
  *
  * <p>无 {@link MeterRegistry} 时（单元测试、非 Spring 场景）全部方法降级为空操作，使用 {@link #NOOP}。</p>
@@ -105,6 +108,20 @@ public class BridgeMetrics {
     public static final String REFLOW_REJECTED = "rejected";
 
     /**
+     * 记录一次设备接入认证结果。
+     *
+     * @param protocolType 协议类型
+     * @param result       认证结果标签，见 {@code com.iotbridge.spi.security.DeviceAuthResult#tag()}
+     */
+    public void securityAuth(String protocolType, String result) {
+        if (registry == null) {
+            return;
+        }
+        registry.counter("iotbridge.security.auth", "protocol", normalize(protocolType), "result", normalize(result))
+                .increment();
+    }
+
+    /**
      * 空操作实例：所有方法不产生任何记录，供非 Spring 场景与单元测试使用。
      */
     public static final BridgeMetrics NOOP = new BridgeMetrics();
@@ -128,15 +145,35 @@ public class BridgeMetrics {
     }
 
     /**
+     * Spring 注入构造：允许运行环境没有 {@link MeterRegistry}（例如未引入
+     * {@code spring-boot-starter-actuator} 的精简部署），此时指标降级为空操作并告警，
+     * 不因“缺监控组件”直接拒绝启动。
+     *
+     * @param registryProvider 注册表提供者（可能为空）
+     * @param sessions         会话查询（提供在线数）
+     * @param buffer           下行暂存缓冲（提供待发量与设备数）
+     */
+    @Autowired
+    public BridgeMetrics(ObjectProvider<MeterRegistry> registryProvider, DeviceSessionQuery sessions,
+                         DownlinkBuffer buffer) {
+        this(registryProvider.getIfAvailable(), sessions, buffer);
+    }
+
+    /**
      * 构造指标组件并注册在线会话、缓冲待发量两个 gauge。
      *
-     * @param registry 注册表
+     * @param registry 注册表；为 {@code null} 时降级为空操作
      * @param sessions 会话查询（提供在线数）
      * @param buffer   下行暂存缓冲（提供待发量与设备数）
      */
-    @Autowired
     public BridgeMetrics(MeterRegistry registry, DeviceSessionQuery sessions, DownlinkBuffer buffer) {
         this.registry = registry;
+        if (registry == null) {
+            this.uplinkDropped = null;
+            log.warn("未发现 MeterRegistry（通常缺少 spring-boot-starter-actuator），指标降级为空操作；"
+                    + "如需监控请引入 actuator 并确认其在运行时 classpath 中");
+            return;
+        }
         this.uplinkDropped = Counter.builder("iotbridge.uplink.dropped")
                 .description("上行队列满被丢弃的帧数")
                 .register(registry);
@@ -149,7 +186,7 @@ public class BridgeMetrics {
         Gauge.builder("iotbridge.downlink.buffer.devices", buffer, DownlinkBuffer::pendingDeviceCount)
                 .description("存在待补发指令的设备数")
                 .register(registry);
-        log.info("网关指标已注册：uplink/downlink/sessions/buffer/reflow");
+        log.info("网关指标已注册：uplink/downlink/sessions/buffer/reflow/security");
     }
 
     /**

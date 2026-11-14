@@ -140,6 +140,25 @@ iotbridge:
     idempotency-ttl-ms: 600000
     idempotency-max-entries: 100000
 
+  # 设备接入认证（设计评审 P0-1）：按 (协议, 设备号) 校验注册表，堵住“知道设备号即可冒名”的缺口
+  security:
+    # 是否启用注册表校验（关闭后认证器直接放行，仅限本地开发）
+    enabled: true
+    # 是否强制执行：true=未通过校验断开连接（TCP）/ 回 CONNACK 5（MQTT）；false=只告警放行（灰度观察）
+    # 生产环境必须为 true，否则 ProductionSecurityGuard 拒绝启动
+    enforce: false
+    # 已授权设备清单（示例，按需替换）；凭据按“越配越严”生效
+    devices: []
+    #  - protocol: sos-c02
+    #    device-id: 861234567890123
+    #    enabled: true
+    #    allowed-ips: [10.20.0.15]
+    #    note: 1 号楼消防主机
+    #  - protocol: mqtt
+    #    device-id: dev-mqtt
+    #    enabled: true
+    #    password: ${DEV_MQTT_PASSWORD:}
+
 # 可观测性：存活/就绪探针 + Prometheus 指标（iotbridge.uplink/downlink/sessions/buffer/reflow）
 management:
   endpoints:

@@ -412,3 +412,19 @@ README 第 10 章是配置表，但缺少：影响的链路（上行/下行/会�
 验证：`mvn -o test` 101 例全绿；JDK 17 打包后启动冒烟通过（`/actuator/health`=UP、prometheus 指标可查、1883 不再监听、`X-Trace-Id` 透传、幂等键重复提交只投放一次、`prod` 缺 key 启动即失败）。
 
 **尚未做（仍是最高优先级）**：P0-1 设备身份认证（当前 TCP 设备可被冒名顶替）、P0-4 TCP 连接数与速率限制、P1-5 指令应答闭环（`requestId` 仍无状态查询）、P1-7 停机排空、P1-8 传输抽象上移 `spi`、P1-9 统一上行信封。
+
+---
+
+## 8. P0-1 落地情况（2026-11-14，第一轮）
+
+| 子项 | 状态 | 说明 |
+| --- | --- | --- |
+| 设备注册表（`(protocol, deviceId)` 维度） | ✅ 已完成 | `iotbridge.security.devices`，支持启用/吊销、设备级密码、证书指纹、来源 IP（精确 + 前缀通配）；键与下行寻址同口径 |
+| TCP 接入校验 | ✅ 已完成 | `UplinkDispatcher` 在 `ChannelManager.register` **之前**校验，未通过不登记会话（因此不可被下行寻址），强制模式关闭连接 |
+| MQTT 接入校验 | ✅ 已完成 | `MqttConnectionHandler` 在 CONNACK 前按 clientId 校验设备级密码，解决“知道全局密码即可冒用任意 clientId” |
+| 灰度与强制 | ✅ 已完成 | `enforce=false` 观察（告警+指标）/ `true` 拒绝；`prod` 下强制，否则 `ProductionSecurityGuard` 拒绝启动 |
+| 审计与观测 | ✅ 已完成 | `iotbridge_security_auth_total{protocol,result}` 六类结果 + WARN 日志（含 protocol/deviceId/remote/result） |
+| **TCP 强身份（mTLS）** | ⛔ 未完成（下一轮） | Netty 侧未挂 `SslHandler`；`DeviceCredential.certFingerprint` 入参与注册表指纹比对已就绪，接入后即可生效 |
+| **协议内认证（固件配合）** | ⛔ 未完成（待定） | SOS-C02 帧无认证字段；若要 HMAC 挑战应答需设备固件支持，需产品侧确认 |
+
+**结论**：本轮把「未登记设备」和「凭据不符设备」挡在门外，MQTT 达到设备级身份；TCP 仍是「白名单 + IP 绑定」的弱身份，强身份依赖 mTLS，尚需一轮。

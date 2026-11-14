@@ -3,6 +3,9 @@ package com.iotbridge.access.mqtt.handler;
 import com.iotbridge.access.mqtt.config.MqttProperties;
 import com.iotbridge.access.netty.api.UplinkFrameEvent;
 import com.iotbridge.access.netty.api.UplinkFrameListener;
+import com.iotbridge.spi.security.DeviceAuthResult;
+import com.iotbridge.spi.security.DeviceAuthenticator;
+import com.iotbridge.spi.security.DeviceCredential;
 import com.iotbridge.access.netty.session.ChannelManager;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
@@ -64,6 +67,7 @@ public class MqttConnectionHandler extends SimpleChannelInboundHandler<MqttMessa
     private final UplinkFrameListener uplinkFrameListener;
     private final MqttProperties properties;
     private final MqttQoS downlinkQos;
+    private final DeviceAuthenticator deviceAuthenticator;
 
     /**
      * 服务端级并发连接计数（含未完成 CONNECT 的连接），供最大连接数限制判断。
@@ -72,10 +76,26 @@ public class MqttConnectionHandler extends SimpleChannelInboundHandler<MqttMessa
 
     public MqttConnectionHandler(ChannelManager channelManager, UplinkFrameListener uplinkFrameListener,
                                  MqttProperties properties, AtomicInteger connectionCount) {
+        this(channelManager, uplinkFrameListener, properties, connectionCount, DeviceAuthenticator.ALLOW_ALL);
+    }
+
+    /**
+     * 构造连接处理器（含设备注册表认证）。
+     *
+     * @param channelManager       会话管理
+     * @param uplinkFrameListener  上行回调
+     * @param properties           MQTT 配置
+     * @param connectionCount      并发连接计数
+     * @param deviceAuthenticator  设备认证器（按 clientId 校验注册表）
+     */
+    public MqttConnectionHandler(ChannelManager channelManager, UplinkFrameListener uplinkFrameListener,
+                                 MqttProperties properties, AtomicInteger connectionCount,
+                                 DeviceAuthenticator deviceAuthenticator) {
         this.channelManager = channelManager;
         this.uplinkFrameListener = uplinkFrameListener;
         this.properties = properties;
         this.connectionCount = connectionCount;
+        this.deviceAuthenticator = deviceAuthenticator;
         this.downlinkQos = properties.getQos() != null && properties.getQos() == 1
                 ? MqttQoS.AT_LEAST_ONCE : MqttQoS.AT_MOST_ONCE;
     }
@@ -137,6 +157,10 @@ public class MqttConnectionHandler extends SimpleChannelInboundHandler<MqttMessa
             reject(ctx, MqttConnectReturnCode.CONNECTION_REFUSED_BAD_USER_NAME_OR_PASSWORD, "用户名或密码错误");
             return;
         }
+        // 设备注册表校验：全局账号密码只能证明“是合法运维账号”，不能证明“是这台设备”
+        if (!authorizeDevice(clientId, connect, ctx)) {
+            return;
+        }
 
         String protocolType = properties.getProtocolType();
         ctx.channel().attr(MqttChannelAttributes.CLIENT_ID).set(clientId);
@@ -156,6 +180,43 @@ public class MqttConnectionHandler extends SimpleChannelInboundHandler<MqttMessa
         addIdleHandler(ctx, connect.variableHeader().keepAliveTimeSeconds());
         log.info("MQTT 设备已连接 clientId={} remote={} keepAlive={}s", clientId, ctx.channel().remoteAddress(),
                 connect.variableHeader().keepAliveTimeSeconds());
+    }
+
+    /**
+     * 按 {@code (protocolType, clientId)} 校验设备注册表授权。
+     *
+     * <p>这是 P0-1 的核心：全局 username/password 无法区分设备，任何拿到它的客户端都能用别人的
+     * clientId 接入并收走其下行；注册表把 clientId 与设备级凭据绑定，冒名者无法通过。</p>
+     *
+     * @param clientId 客户端标识（即设备号）
+     * @param connect  CONNECT 报文（取密码作为设备凭据）
+     * @param ctx      连接上下文
+     * @return 允许接入为 {@code true}；强制模式下未通过会回 CONNACK 5 并断开
+     */
+    private boolean authorizeDevice(String clientId, MqttConnectMessage connect, ChannelHandlerContext ctx) {
+        byte[] passwordBytes = connect.payload().passwordInBytes();
+        String password = passwordBytes == null ? null : new String(passwordBytes, StandardCharsets.UTF_8);
+        DeviceAuthResult result;
+        try {
+            result = deviceAuthenticator.authenticate(DeviceCredential.of(properties.getProtocolType(), clientId,
+                    password, null, String.valueOf(ctx.channel().remoteAddress())));
+        } catch (RuntimeException ex) {
+            log.error("MQTT 设备认证异常，按未通过处理 clientId={}", clientId, ex);
+            result = DeviceAuthResult.BAD_CREDENTIAL;
+        }
+        if (result.isAllowed()) {
+            return true;
+        }
+        if (deviceAuthenticator.isEnforcing()) {
+            log.warn("MQTT 设备接入被拒绝 clientId={} remote={} result={}", clientId,
+                    ctx.channel().remoteAddress(), result.tag());
+            reject(ctx, MqttConnectReturnCode.CONNECTION_REFUSED_NOT_AUTHORIZED,
+                    "设备未获授权：" + result.tag());
+            return false;
+        }
+        log.warn("MQTT 设备未通过注册表校验，观察模式放行 clientId={} remote={} result={}", clientId,
+                ctx.channel().remoteAddress(), result.tag());
+        return true;
     }
 
     /**

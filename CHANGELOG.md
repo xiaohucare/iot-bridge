@@ -13,8 +13,11 @@
 - **REST 幂等键**：`POST /api/v1/devices/{deviceId}/commands` 支持 `Idempotency-Key` 请求头（8–128 位字母数字或 `_ . : -`），同设备同键在窗口内重复提交返回首次 `requestId` 且不再投放；记忆在 broker confirm 成功后写入，失败可安全重试。
 - **可观测性**：接入 `spring-boot-starter-actuator` + `micrometer-registry-prometheus`，暴露 `/actuator/health`（含 liveness/readiness 探针）与 `/actuator/prometheus`；新增 `BridgeMetrics` 六类核心指标（上行帧/丢帧、下行结果、在线会话、暂存待发、补发结果），文档见 `docs/monitoring/metrics.md`。
 - **日志链路字段与滚动文件**：新增 `logback-spring.xml`（控制台 + 100MB/30 天/2GB 上限滚动文件）；REST `TraceIdFilter` 生成或透传 `X-Trace-Id` 并回写响应头，上行/下行/补发线程写入 `deviceId`/`protocolType`/`requestId` MDC。
-- **生产安全基线**：`ProductionSecurityGuard` 在 `prod` profile 下校验 `iotbridge.admin.api-key` 非空、MQTT 启用时必须配置 `username`，不满足直接启动失败。
+- **生产安全基线**：`ProductionSecurityGuard` 在 `prod` profile 下校验 `iotbridge.admin.api-key` 非空、MQTT 启用时必须配置 `username`、设备注册表必须启用且强制，不满足直接启动失败。
 - **通用有界 TTL 缓存**：`BoundedTtlCache`（过期先清理、超限拒绝并计数），供两处幂等去重使用，内存不会无界增长。
+
+- **设备接入认证（P0-1）**：新增 SPI 契约 `DeviceAuthenticator` / `DeviceCredential` / `DeviceAuthResult` 与 `iotbridge.security` 设备注册表（`(protocol, deviceId)` 维度，支持启用/吊销、设备级密码、客户端证书指纹、来源 IP 绑定）。TCP 在会话登记前校验、MQTT 在 CONNACK 前校验；未通过时强制模式断链 / 回 CONNACK 5，观察模式只告警。默认观察模式，`prod` 必须 `enforce=true`（否则启动失败）。
+- **认证指标**：新增 `iotbridge_security_auth_total{protocol,result}`（allowed/notConfigured/unknownDevice/disabled/badCredential/networkDenied），并接入告警建议。
 
 ### Changed
 
@@ -23,11 +26,15 @@
 - **补发线程池有界化**：`reflow` 改用 `ThreadPoolExecutor + ArrayBlockingQueue(reflow-queue-capacity)` + `AbortPolicy`，队列满拒绝并计数；提交前先判断该会话是否有待发指令，同一会话任务以 in-flight 标记去重，避免心跳帧持续堆积空任务。
 - **补发三态处理**：补发遇 `UNKNOWN` 只退回其后帧，当前帧按「至多一次」处理（原实现会连同当前帧一起退回，存在重复执行风险）。
 
+### Fixed
+
+- **缺少指标注册表时不再拒绝启动**：`BridgeMetrics` 改为经 `ObjectProvider<MeterRegistry>` 注入，运行环境未引入 `spring-boot-starter-actuator`（如 IDE 未刷新 Maven 依赖的精简 classpath）时只告警并降级为空操作，修复 `Parameter 0 of constructor in BridgeMetrics required a bean of type MeterRegistry` 导致的启动失败。
+
 ### Docs
 
 - 修正 `CONTRIBUTING.md` 分层图与实际依赖（`bridge-core` 依赖 `mq` 与 `access-netty`，`access-mqtt` 依赖 `access-netty`），并明确 `UplinkFrameListener`（`access-netty.api`）/`UplinkProducer`（`mq.api`）/`spi` 契约的实际位置与已知待改点。
 - README 补充 `Idempotency-Key`、三态与幂等说明、MQTT 默认关闭、新增配置项、计量端点、测试用例数（81 → 101）与 `iotbridge-mq` 自动化缺口。
-- 新增 `docs/monitoring/metrics.md`（指标语义、PromQL、告警建议）；`docs/deployment.md` 增加生产安全基线、健康检查与指标、日志字段与新增排查项。
+- 新增 `docs/monitoring/metrics.md`（指标语义、PromQL、告警建议）；`docs/deployment.md` 增加生产安全基线、设备接入认证（含灰度步骤与 TCP 身份边界）、健康检查与指标、日志字段与新增排查项。
 
 ## [1.0.0] - 2026-11-05
 

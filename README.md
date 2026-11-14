@@ -479,6 +479,9 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 | `iotbridge.uplink.worker-threads` | 上行处理分片数（按连接哈希固定分片，同连接帧有序；不占 Netty IO 线程） | 4 |
 | `iotbridge.uplink.queue-capacity` | 上行待处理帧总队列容量，溢出丢弃并采样告警（背压保护） | 10000 |
 | `iotbridge.admin.api-key` | REST 鉴权 API Key（`X-Api-Key` / `Authorization: Bearer`）；为空时开发环境仅告警，`prod` profile 下**拒绝启动** | 空 |
+| `iotbridge.security.enabled` | 是否启用设备注册表校验（false 直接放行，仅限本地；`prod` 下拒绝启动） | true |
+| `iotbridge.security.enforce` | 是否强制执行：true=未通过校验断链/CONNACK 5；false=只告警放行（灰度观察） | false（`prod` 必须 true） |
+| `iotbridge.security.devices[]` | 授权设备清单：`protocol` / `device-id` / `enabled` / `password` / `cert-fingerprint` / `allowed-ips` / `note` | 空 |
 | `iotbridge.mqtt.enabled` | 是否启用 MQTT 3.1.1 接入（false 不绑定端口） | **false** |
 | `iotbridge.mqtt.host` / `port` | MQTT 监听地址/端口 | 0.0.0.0 / 1883 |
 | `iotbridge.mqtt.protocol-type` | MQTT 会话与下行指令使用的协议标识 | mqtt |
@@ -540,7 +543,7 @@ curl -XPOST http://localhost:8080/api/v1/devices/869975034441082/commands \
 mvn test
 ```
 
-共 **101** 个用例，全部通过：
+共 **114** 个用例，全部通过：
 
 | 模块 | 测试类 | 数量 | 覆盖 |
 | --- | --- | --- | --- |
@@ -558,11 +561,12 @@ mvn test
 | bridge-core | `DownlinkBufferTest` | 10 | 暂存/补发/容量/TTL/超期定时清理/协议隔离 |
 | bridge-core | `DownlinkDispatcherTest` | 7 | 离线暂存、双检补发、毒消息吞掉；状态未知不暂存、重复 requestId 跳过 |
 | bridge-core | `DownlinkReflowServiceTest` | 7 | 按序补发、失败退回、编码失败跳过；状态未知只退后续帧、无待发不提交任务 |
-| bridge-core | `UplinkDispatcherTest` | 3 | 端口协议绑定、上线补发 |
+| bridge-core | `UplinkDispatcherTest` | 4 | 端口协议绑定、上线补发；强制模式下未在册设备不登记会话并断链 |
+| bridge-core | `RegistryDeviceAuthenticatorTest` | 9 | 在册放行、未在册拒绝、停用、同号跨协议隔离、密码/证书指纹/IP 绑定、空清单拒绝全部 |
 | bridge-core | `DeviceSessionQueryAdapterTest` | 3 | 在线查询适配 |
-| bridge-core | `BridgeMetricsTest` | 2 | 指标计数与 gauge 注册、NOOP 降级 |
+| bridge-core | `BridgeMetricsTest` | 3 | 指标计数与 gauge 注册、NOOP 降级、缺 MeterRegistry 时降级不失败 |
 | admin | `CommandControllerTest` | 3 | 正常投放、幂等键只投放一次、非法幂等键 400 |
-| starter | `ProductionSecurityGuardTest` | 4 | prod 缺 api-key/MQTT 匿名拒绝启动、开发环境放行 |
+| starter | `ProductionSecurityGuardTest` | 6 | prod 缺 api-key / MQTT 匿名 / 设备认证未强制或未启用时拒绝启动、开发环境放行 |
 
 ## 13. 工程结构
 
@@ -596,12 +600,13 @@ iot-bridge/
 - **可靠性**：上行 Kafka 生产者 `acks=all` + 幂等生产者（重试不重复），参数统一经 `spring.kafka.producer.*` 配置；下行 RabbitMQ 发布端同步等待 broker confirm（nack/超时即向 REST 返回 503 + `B0300`），消费端手动 ack，处理异常与毒消息经死信参数转入 `<下行队列>.dlq`；下行写通道同步等待真实发送结果（有界超时），并按**三态**返回：`DELIVERED` 确认送达；`NOT_DELIVERED`（离线/不可写/写失败）才允许暂存重投；`UNKNOWN`（等待超时、线程中断）表示数据可能已写出，**不重投**，只计数告警，避免设备重复执行。
 - **在线判定即写即发（可选缓冲重投）**：设备离线时默认丢弃并告警；开启 `iotbridge.downlink.buffer-enabled` 后按 `(protocolType, deviceId)` 暂存**原始下行指令**（有界 + TTL），设备重新上线（收到上行）时由 `DownlinkReflowService` 在独立补发线程池（不占 Netty IO 线程，不同设备并行、同会话分段锁串行）**以当前指令重新编码后**按序补发（规避 `timeCalib` 等含时间戳指令在离线期间失效）；补发中发送失败则中断并把剩余帧按原序退回缓冲，等待下次上线，杜绝静默丢失。超期暂存由后台定时线程周期清理。缓冲仅存于当前实例内存，进程重启清空、多实例不共享。
 - **下行幂等**：投递级按 `(protocolType, deviceId, requestId)` 记忆「已确认送达」，MQ 重投或 REST 重试到达的重复指令直接跳过；REST 侧另有 `Idempotency-Key` 在投放前拦截重复提交（记忆在 broker confirm 成功后写入，失败可安全重试）。两处记录均用有界 TTL 缓存（过期先清理，超限拒绝并计数），内存不会无界增长。
-- **可观测性**：`/actuator/health`（liveness/readiness）+ `/actuator/prometheus`；核心指标见 `docs/monitoring/metrics.md`。日志经 `logback-spring.xml` 输出控制台与滚动文件，MDC 携带 `traceId`（REST 请求）/`deviceId`/`protocolType`/`requestId`，可按 requestId 串起「REST 入口 → Rabbit 消费 → 设备写入」。
+- **可观测性**：`/actuator/health`（liveness/readiness）+ `/actuator/prometheus`；核心指标见 `docs/monitoring/metrics.md`。若运行环境未引入 actuator（无 `MeterRegistry`），指标降级为空操作并告警，不影响网关启动；日志经 `logback-spring.xml` 输出控制台与滚动文件，MDC 携带 `traceId`（REST 请求）/`deviceId`/`protocolType`/`requestId`，可按 requestId 串起「REST 入口 → Rabbit 消费 → 设备写入」。
 - **错误码与 HTTP 状态**：业务异常保留原始 `code`，并按类别映射 400/401/409/503，不再一律 200 + 系统错误。
 - **会话互踢**：同一 `(protocolType, deviceId)` 重复上线时新连接顶替旧连接，旧 TCP 连接被主动关闭，防止僵尸连接占用资源。
+- **设备接入认证（P0-1）**：`iotbridge.security.devices` 按 `(协议, 设备号)` 登记授权设备，可绑定密码、客户端证书指纹与来源 IP；开启 `enforce=true` 后未通过校验的设备直接断链 / 回 CONNACK 5，冒名者无法用别人的设备号接入并收走下行的指令。默认观察模式（只告警），`prod` 下必须强制。
 - **安全**：REST 提供 API Key 鉴权（`iotbridge.admin.api-key`，`X-Api-Key` 或 `Authorization: Bearer`，常量时间比较）；`prod` profile 下 api-key 为空或 MQTT 启用却未配 username 时**启动直接失败**（`ProductionSecurityGuard`）。MQTT 接入**默认关闭**，启用需显式配置并建议先配用户名/密码。设备接入侧 TCP（9000/9001）与 MQTT（1883）均为明文，如需链路加密需在设备与网关之间加 TLS 终结或专用安全网关（MQTT TLS 常用 8883）。
-- **仍待完善（安全）**：设备侧没有接入身份认证，TCP 协议内 `deviceId` 由帧内容提供，任何知道设备号的一方都能顶替该会话并接收其下行；上线前应补设备注册/密钥校验与白名单，详见 `docs/design-review-2026-11-14.md` P0-1。
-- **未包含**：设备级鉴权（设备注册/白名单/证书）、指令**应答**确认闭环（设备 ACK 回传与 `requestId` 状态查询）、设备影子持久化、跨实例会话共享与离线缓冲共享（多实例需配合一致哈希路由）、链路 TLS、MQTT retained/Will/QoS2、TCP 侧最大连接数与速率限制——接口位已预留，可迭代增强。
+- **设备接入认证现状**：注册表已能拦截「未登记设备」与「凭据不符」，MQTT 因此从“全局一个密码”升级为“设备级密码 + clientId 绑定”；TCP 因 SOS-C02 帧内没有认证字段，只能做到 **注册表白名单 + 来源 IP 绑定**，强身份仍需前置 mTLS（Netty 侧读取客户端证书指纹的钩子已预留，见 `docs/deployment.md` §4.5）。因此仍**不等于**设备端密钥/证书认证，详见 `docs/design-review-2026-11-14.md` P0-1。
+- **未包含**：设备侧 mTLS/证书认证（当前为注册表白名单 + IP 绑定）、指令**应答**确认闭环（设备 ACK 回传与 `requestId` 状态查询）、设备影子持久化、跨实例会话共享与离线缓冲共享（多实例需配合一致哈希路由）、链路 TLS、MQTT retained/Will/QoS2、TCP 侧最大连接数与速率限制——接口位已预留，可迭代增强。
 - **SOS 样例帧**：因协议文档样例中厂商码/CRC 为占位，测试采用“自造合法帧 + 回解析自洽 + 篡改 CRC 必失败”策略；如有含真实值的完整样例帧，可补充逐字节比对用例。
 
 # 启动：docker compose -f docker/docker-compose.yml up -d

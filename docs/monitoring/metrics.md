@@ -21,6 +21,7 @@ GET /actuator/health/readiness
 | `iotbridge_sessions_active` | gauge | — | 当前在线会话数（`(protocolType, deviceId)` 计） | 骤降=设备大面积掉线或接入故障；持续为 0 但业务说有设备=监听端口/协议绑定问题 |
 | `iotbridge_downlink_buffer_pending` | gauge | — | 离线暂存待补发指令总数 | 开启缓冲后应周期性回落；单调上升说明设备长期不在线或补发失败 |
 | `iotbridge_downlink_buffer_devices` | gauge | — | 存在待补发指令的设备数 | 结合 `max-pending-devices` 上限评估容量 |
+| `iotbridge_security_auth_total` | counter | `protocol`, `result` | 设备接入认证结果。`result` = `allowed` / `notConfigured` / `unknownDevice` / `disabled` / `badCredential` / `networkDenied` | `unknownDevice` 增长=有设备未登记（灰度期即是待补清单）；`badCredential`/`networkDenied` 增长=凭据泄露或 IP 漂移，需立即排查 |
 | `iotbridge_reflow_total` | counter | `result` | 补发结果。`sent` / `failed` / `unknown` / `skipped` / `rejected` | `rejected` 增长=补发队列打满（设备集中重连）；`failed` 增长=通道反复失效；`unknown` 说明写等待超时 |
 
 ### 下行 `result` 语义（关键）
@@ -57,6 +58,12 @@ iotbridge_downlink_buffer_pending > 1000
 # 补发队列拒绝
 increase(iotbridge_reflow_total{result="rejected"}[5m]) > 0
 
+# 未登记设备（灰度盘点 / 强制后即异常）
+sum by (protocol) (rate(iotbridge_security_auth_total{result="unknownDevice"}[10m]))
+
+# 凭据错误或来源受限（疑似冒名）
+sum(rate(iotbridge_security_auth_total{result=~"badCredential|networkDenied"}[5m])) > 0
+
 # 会话数骤降（与 1 小时前比较，跌幅 > 50%）
 iotbridge_sessions_active < 0.5 * (iotbridge_sessions_active offset 1h)
 ```
@@ -70,6 +77,8 @@ iotbridge_sessions_active < 0.5 * (iotbridge_sessions_active offset 1h)
 | `iotbridge_downlink_buffer_pending` 持续上升 30 分钟 | P2 | 检查设备在线率与补发失败日志 |
 | `reflow{result="rejected"}` 出现 | P2 | 设备集中重连；评估 `reflow-queue-capacity` 与补发线程数 |
 | `sessions_active` 跌幅 > 50%/1h | P1 | 检查接入端口、网络、设备批量掉电 |
+| `security_auth{result="badCredential"}` 或 `networkDenied` 非零 | P1 | 疑似冒名接入或 IP 漂移；核对注册表与设备变更记录 |
+| `security_auth{result="unknownDevice"}` 持续增长 | P2（灰度期）/ P1（强制后） | 补登记设备清单；强制后出现说明有未报备设备在尝试接入 |
 | `/actuator/health/readiness` 非 UP | P1 | 依赖（Kafka/Rabbit）或接入服务异常 |
 
 ## 4. 日志与指标的对应
@@ -81,6 +90,8 @@ iotbridge_sessions_active < 0.5 * (iotbridge_sessions_active offset 1h)
 | `补发任务队列已满，本次补发已拒绝` | `reflow{result="rejected"}` |
 | `补发写入状态未知` | `reflow{result="unknown"}` |
 | `上行处理队列已满，丢弃该帧` | `uplink_dropped_total` |
+| `设备接入被拒绝 ... result=` | `security_auth{result}`（强制模式拒绝） |
+| `设备未通过接入认证但当前为观察模式，已放行` | `security_auth{result}`（观察模式，未拦截） |
 
 日志文件位置与链路字段（`traceId` / `deviceId` / `requestId`）见部署文档《7. 日志》。
 

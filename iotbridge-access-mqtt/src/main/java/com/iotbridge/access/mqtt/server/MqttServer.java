@@ -6,6 +6,7 @@ import com.iotbridge.access.mqtt.handler.MqttDownlinkWriteHandler;
 import com.iotbridge.access.netty.api.AccessServer;
 import com.iotbridge.access.netty.api.UplinkFrameListener;
 import com.iotbridge.access.netty.session.ChannelManager;
+import com.iotbridge.spi.security.DeviceAuthenticator;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
@@ -21,6 +22,7 @@ import io.netty.handler.timeout.IdleStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.net.InetSocketAddress;
@@ -46,6 +48,7 @@ public class MqttServer implements AccessServer {
     private final MqttProperties properties;
     private final ChannelManager channelManager;
     private final UplinkFrameListener uplinkFrameListener;
+    private final DeviceAuthenticator deviceAuthenticator;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -56,11 +59,33 @@ public class MqttServer implements AccessServer {
      */
     private final AtomicInteger connectionCount = new AtomicInteger();
 
+    /**
+     * 构造服务端（不做设备注册表校验，供单元测试与无安全模块场景使用）。
+     *
+     * @param properties           MQTT 配置
+     * @param channelManager       会话管理
+     * @param uplinkFrameListener  上行回调
+     */
     public MqttServer(MqttProperties properties, ChannelManager channelManager,
                       UplinkFrameListener uplinkFrameListener) {
+        this(properties, channelManager, uplinkFrameListener, DeviceAuthenticator.ALLOW_ALL);
+    }
+
+    /**
+     * 构造服务端（含设备注册表校验）。
+     *
+     * @param properties           MQTT 配置
+     * @param channelManager       会话管理
+     * @param uplinkFrameListener  上行回调
+     * @param deviceAuthenticator  设备认证器
+     */
+    @Autowired
+    public MqttServer(MqttProperties properties, ChannelManager channelManager,
+                      UplinkFrameListener uplinkFrameListener, DeviceAuthenticator deviceAuthenticator) {
         this.properties = properties;
         this.channelManager = channelManager;
         this.uplinkFrameListener = uplinkFrameListener;
+        this.deviceAuthenticator = deviceAuthenticator;
     }
 
     @Override
@@ -92,7 +117,7 @@ public class MqttServer implements AccessServer {
                                         new IdleStateHandler(connectTimeout, 0, 0, TimeUnit.SECONDS));
                             }
                             ch.pipeline().addLast("mqttConnection", new MqttConnectionHandler(channelManager,
-                                    uplinkFrameListener, properties, connectionCount));
+                                    uplinkFrameListener, properties, connectionCount, deviceAuthenticator));
                         }
                     })
                     .bind(properties.getHost(), properties.getPort())

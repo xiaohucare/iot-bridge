@@ -122,4 +122,39 @@ class UplinkDispatcherTest {
         verify(channelManager, never()).sendToDevice(anyString(), anyString(), any());
         assertEquals(0, buffer.pendingSize("sos-c02", "dev1"));
     }
+
+    @Test
+    void rejectedDeviceNotRegistered() {
+        // 强制模式下未在册设备：不登记会话、不投递 Kafka，并断开连接
+        ProtocolCodec codec = mock(ProtocolCodec.class);
+        when(codec.decode(any())).thenReturn(new UplinkMessage("dev-unknown", "demo-text", new HashMap<>(), 1L));
+        ProtocolCodecRegistry registry = mock(ProtocolCodecRegistry.class);
+        when(registry.resolve(any())).thenReturn(codec);
+        ChannelManager channelManager = mock(ChannelManager.class);
+        UplinkProducer producer = mock(UplinkProducer.class);
+        Channel channel = mock(Channel.class);
+        DownlinkReflowService reflowService = new DownlinkReflowService(buffer(false), channelManager, registry,
+                Runnable::run);
+        com.iotbridge.spi.security.DeviceAuthenticator authenticator =
+                new com.iotbridge.spi.security.DeviceAuthenticator() {
+                    @Override
+                    public com.iotbridge.spi.security.DeviceAuthResult authenticate(
+                            com.iotbridge.spi.security.DeviceCredential credential) {
+                        return com.iotbridge.spi.security.DeviceAuthResult.UNKNOWN_DEVICE;
+                    }
+
+                    @Override
+                    public boolean isEnforcing() {
+                        return true;
+                    }
+                };
+        UplinkDispatcher dispatcher = new UplinkDispatcher(registry, channelManager, producer, reflowService,
+                Runnable::run, authenticator);
+
+        dispatcher.onUplinkFrame(eventOf(channel));
+
+        verify(channelManager, never()).register(anyString(), anyString(), any());
+        verify(producer, never()).send(any());
+        verify(channel).close();
+    }
 }

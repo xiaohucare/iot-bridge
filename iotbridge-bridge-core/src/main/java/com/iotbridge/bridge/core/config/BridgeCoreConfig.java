@@ -1,5 +1,6 @@
 package com.iotbridge.bridge.core.config;
 
+import com.iotbridge.bridge.core.security.DeviceSecurityProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 
@@ -13,6 +14,7 @@ import org.springframework.context.annotation.Configuration;
  * @date 2026-11-05
  */
 @Configuration
-@EnableConfigurationProperties({DownlinkBufferProperties.class, UplinkProperties.class})
+@EnableConfigurationProperties({DownlinkBufferProperties.class, UplinkProperties.class,
+        DeviceSecurityProperties.class})
 public class BridgeCoreConfig {
 }
